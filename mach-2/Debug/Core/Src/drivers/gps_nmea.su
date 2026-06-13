@@ -1,0 +1,4 @@
+../Core/Src/drivers/gps_nmea.c:22:14:nmea_to_decimal	32	static
+../Core/Src/drivers/gps_nmea.c:36:13:nmea_checksum_ok	24	static
+../Core/Src/drivers/gps_nmea.c:51:13:get_field	40	static
+../Core/Src/drivers/gps_nmea.c:73:6:GPS_ParseRMC	72	static

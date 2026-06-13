@@ -1,0 +1,6322 @@
+### FILE: ./Inc/app_types.h
+```c
+#ifndef APP_TYPES_H
+#define APP_TYPES_H
+
+#include "cmsis_os.h"
+#include "FreeRTOS.h"  /* Required for FreeRTOS types */
+#include "queue.h"     /* Required for QueueHandle_t */
+#include "semphr.h"    /* Required for SemaphoreHandle_t */
+#include <stdint.h>
+#include <stdbool.h>
+//extern volatile float g_heading_deg;
+//extern volatile float g_gps_lat;
+//extern volatile float g_gps_lon;
+//extern volatile bool  g_gps_valid;
+//
+//extern volatile TickType_t g_last_flysky_tick;
+/* ── Navigation ── */
+typedef enum {
+    NAV_SOURCE_FLYSKY = 0,
+    NAV_SOURCE_RPI,
+} NavSource_t;
+
+typedef struct {
+    NavSource_t source;
+    int16_t     throttle;   // -1000 to +1000
+    int16_t     steering;   // -1000 to +1000
+    uint32_t    timestamp;  // xTaskGetTickCount()
+} NavCommand_t;
+
+/* ── Sensors ── */
+typedef struct {
+    float    temperature;   // DHT11 °C
+    float    humidity;      // DHT11 %
+    bool     dht_valid;     // Added: Missing dht flag
+    float    mq135_ppm;     // air quality
+    float    turbidity_ntu;
+    float    ph;
+    float    tds_ppm;
+    float    latitude;
+    float    longitude;
+    bool     gps_valid;     // Added: Missing gps flag
+    float    heading_deg;   // compass
+    uint32_t timestamp;
+} SensorData_t;
+
+/* ── Motor ── */
+typedef struct {
+    uint16_t pwm_a;         // 0–1000 TIM ARR units
+    uint16_t pwm_b;
+    bool     dir_a;
+    bool     dir_b;
+} MotorCmd_t;
+
+/* ── Global Handles (extern in main.c) ── */
+extern QueueHandle_t  xNavQueue;
+extern QueueHandle_t  xSensorQueue;
+extern SemaphoreHandle_t xI2CMutex;
+extern SemaphoreHandle_t xSDMutex;
+extern SemaphoreHandle_t xUART2Mutex;
+
+/* ── Shared Volatile State (extern in main.c) ── */
+extern volatile float      g_gps_lat;
+extern volatile float      g_gps_lon;
+extern volatile bool       g_gps_valid;
+extern volatile float      g_heading_deg;
+extern volatile TickType_t g_last_flysky_tick;
+extern volatile int16_t    g_flysky_throttle;
+extern volatile int16_t    g_flysky_steering;
+#endif
+
+```
+
+### FILE: ./Inc/drivers/compass.h
+```c
+#ifndef COMPASS_H
+#define COMPASS_H
+
+#include "main.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+/* ── I2C addresses (7-bit, shifted left for HAL) ─────────────── */
+#define HMC5883L_ADDR   (0x1E << 1)   /* original Honeywell chip  */
+#define QMC5883L_ADDR   (0x0D << 1)   /* clone — used on NEO-M8N  */
+
+typedef enum {
+    COMPASS_CHIP_UNKNOWN  = 0,
+    COMPASS_CHIP_HMC5883L,
+    COMPASS_CHIP_QMC5883L,
+} CompassChip_t;
+
+typedef struct {
+    float        heading_deg;
+    bool         valid;
+    CompassChip_t chip;   /* detected chip type, for debug */
+} Compass_Data_t;
+
+bool Compass_Init(I2C_HandleTypeDef *hi2c);
+bool Compass_Read(I2C_HandleTypeDef *hi2c, Compass_Data_t *out);
+
+/* Returns which chip was detected after Compass_Init */
+CompassChip_t Compass_GetChip(void);
+
+#endif /* COMPASS_H */
+
+```
+
+### FILE: ./Inc/drivers/dht11.h
+```c
+#ifndef DHT11_H
+#define DHT11_H
+
+#include "main.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+/* ── Pin ── change if your CubeMX label differs ─────────────────────── */
+#define DHT11_GPIO_PORT   DHT_PIN_GPIO_Port   /* PC0 */
+#define DHT11_GPIO_PIN    DHT_PIN_Pin
+
+typedef enum {
+    DHT11_OK = 0,
+    DHT11_ERR_TIMEOUT,
+    DHT11_ERR_CHECKSUM,
+} DHT11_Status_t;
+
+typedef struct {
+    float temperature;   /* °C  */
+    float humidity;      /* %   */
+} DHT11_Data_t;
+
+void           DHT11_Init(void);
+DHT11_Status_t DHT11_Read(DHT11_Data_t *out);
+
+#endif /* DHT11_H */
+
+```
+
+### FILE: ./Inc/drivers/gps_nmea.h
+```c
+#ifndef GPS_NMEA_H
+#define GPS_NMEA_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef struct {
+    float latitude;
+    float longitude;
+    bool  valid;
+} GPS_Data_t;
+
+/* Parse a $GPRMC or $GNRMC NMEA sentence (null-terminated, no \r\n).
+ * Returns true if the sentence is valid and position was extracted. */
+bool GPS_ParseRMC(const char *sentence, GPS_Data_t *out);
+
+#endif /* GPS_NMEA_H */
+
+```
+
+### FILE: ./Inc/FreeRTOSConfig.h
+```c
+/* USER CODE BEGIN Header */
+/*
+ * FreeRTOS Kernel V10.3.1
+ * Portion Copyright (C) 2017 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+ * Portion Copyright (C) 2019 StMicroelectronics, Inc.  All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * http://www.FreeRTOS.org
+ * http://aws.amazon.com/freertos
+ *
+ * 1 tab == 4 spaces!
+ */
+/* USER CODE END Header */
+
+#ifndef FREERTOS_CONFIG_H
+#define FREERTOS_CONFIG_H
+
+/*-----------------------------------------------------------
+ * Application specific definitions.
+ *
+ * These definitions should be adjusted for your particular hardware and
+ * application requirements.
+ *
+ * These parameters and more are described within the 'configuration' section of the
+ * FreeRTOS API documentation available on the FreeRTOS.org web site.
+ *
+ * See http://www.freertos.org/a00110.html
+ *----------------------------------------------------------*/
+
+/* USER CODE BEGIN Includes */
+/* Section where include file can be added */
+/* USER CODE END Includes */
+
+/* Ensure definitions are only used by the compiler, and not by the assembler. */
+#if defined(__ICCARM__) || defined(__CC_ARM) || defined(__GNUC__)
+  #include <stdint.h>
+  extern uint32_t SystemCoreClock;
+  void xPortSysTickHandler(void);
+#endif
+#ifndef CMSIS_device_header
+#define CMSIS_device_header "stm32f4xx.h"
+#endif /* CMSIS_device_header */
+
+#define configENABLE_FPU                         0
+#define configENABLE_MPU                         0
+
+#define configUSE_PREEMPTION                     1
+#define configSUPPORT_STATIC_ALLOCATION          1
+#define configSUPPORT_DYNAMIC_ALLOCATION         1
+#define configUSE_IDLE_HOOK                      0
+#define configUSE_TICK_HOOK                      0
+#define configCPU_CLOCK_HZ                       ( SystemCoreClock )
+#define configTICK_RATE_HZ                       ((TickType_t)1000)
+#define configMAX_PRIORITIES                     ( 56 )
+#define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
+#define configTOTAL_HEAP_SIZE                    ((size_t)32768)
+#define configMAX_TASK_NAME_LEN                  ( 16 )
+#define configUSE_TRACE_FACILITY                 1
+#define configUSE_16_BIT_TICKS                   0
+#define configUSE_MUTEXES                        1
+#define configQUEUE_REGISTRY_SIZE                8
+#define configCHECK_FOR_STACK_OVERFLOW           2
+#define configUSE_RECURSIVE_MUTEXES              1
+#define configUSE_MALLOC_FAILED_HOOK             1
+#define configUSE_COUNTING_SEMAPHORES            1
+#define configUSE_PORT_OPTIMISED_TASK_SELECTION  0
+/* USER CODE BEGIN MESSAGE_BUFFER_LENGTH_TYPE */
+/* Defaults to size_t for backward compatibility, but can be changed
+   if lengths will always be less than the number of bytes in a size_t. */
+#define configMESSAGE_BUFFER_LENGTH_TYPE         size_t
+/* USER CODE END MESSAGE_BUFFER_LENGTH_TYPE */
+
+/* Co-routine definitions. */
+#define configUSE_CO_ROUTINES                    0
+#define configMAX_CO_ROUTINE_PRIORITIES          ( 2 )
+
+/* Software timer definitions. */
+#define configUSE_TIMERS                         1
+#define configTIMER_TASK_PRIORITY                ( 2 )
+#define configTIMER_QUEUE_LENGTH                 10
+#define configTIMER_TASK_STACK_DEPTH             256
+
+/* CMSIS-RTOS V2 flags */
+#define configUSE_OS2_THREAD_SUSPEND_RESUME  1
+#define configUSE_OS2_THREAD_ENUMERATE       1
+#define configUSE_OS2_EVENTFLAGS_FROM_ISR    1
+#define configUSE_OS2_THREAD_FLAGS           1
+#define configUSE_OS2_TIMER                  1
+#define configUSE_OS2_MUTEX                  1
+
+/* Set the following definitions to 1 to include the API function, or zero
+to exclude the API function. */
+#define INCLUDE_vTaskPrioritySet             1
+#define INCLUDE_uxTaskPriorityGet            1
+#define INCLUDE_vTaskDelete                  1
+#define INCLUDE_vTaskCleanUpResources        0
+#define INCLUDE_vTaskSuspend                 1
+#define INCLUDE_vTaskDelayUntil              1
+#define INCLUDE_vTaskDelay                   1
+#define INCLUDE_xTaskGetSchedulerState       1
+#define INCLUDE_xTimerPendFunctionCall       1
+#define INCLUDE_xQueueGetMutexHolder         1
+#define INCLUDE_uxTaskGetStackHighWaterMark  1
+#define INCLUDE_xTaskGetCurrentTaskHandle    1
+#define INCLUDE_eTaskGetState                1
+
+/*
+ * The CMSIS-RTOS V2 FreeRTOS wrapper is dependent on the heap implementation used
+ * by the application thus the correct define need to be enabled below
+ */
+#define USE_FreeRTOS_HEAP_4
+
+/* Cortex-M specific definitions. */
+#ifdef __NVIC_PRIO_BITS
+ /* __BVIC_PRIO_BITS will be specified when CMSIS is being used. */
+ #define configPRIO_BITS         __NVIC_PRIO_BITS
+#else
+ #define configPRIO_BITS         4
+#endif
+
+/* The lowest interrupt priority that can be used in a call to a "set priority"
+function. */
+#define configLIBRARY_LOWEST_INTERRUPT_PRIORITY   15
+
+/* The highest interrupt priority that can be used by any interrupt service
+routine that makes calls to interrupt safe FreeRTOS API functions.  DO NOT CALL
+INTERRUPT SAFE FREERTOS API FUNCTIONS FROM ANY INTERRUPT THAT HAS A HIGHER
+PRIORITY THAN THIS! (higher priorities are lower numeric values. */
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5
+
+/* Interrupt priorities used by the kernel port layer itself.  These are generic
+to all Cortex-M ports, and do not rely on any particular library functions. */
+#define configKERNEL_INTERRUPT_PRIORITY 		( configLIBRARY_LOWEST_INTERRUPT_PRIORITY << (8 - configPRIO_BITS) )
+/* !!!! configMAX_SYSCALL_INTERRUPT_PRIORITY must not be set to zero !!!!
+See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY 	( configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS) )
+
+/* Normal assert() semantics without relying on the provision of an assert.h
+header file. */
+/* USER CODE BEGIN 1 */
+#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* USER CODE END 1 */
+
+/* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS
+standard names. */
+#define vPortSVCHandler    SVC_Handler
+#define xPortPendSVHandler PendSV_Handler
+
+/* IMPORTANT: After 10.3.1 update, Systick_Handler comes from NVIC (if SYS timebase = systick), otherwise from cmsis_os2.c */
+
+#define USE_CUSTOM_SYSTICK_HANDLER_IMPLEMENTATION 1
+
+/* USER CODE BEGIN Defines */
+/* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+/* USER CODE END Defines */
+
+#endif /* FREERTOS_CONFIG_H */
+
+```
+
+### FILE: ./Inc/main.h
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.h
+  * @brief          : Header for main.c file.
+  *                   This file contains the common defines of the application.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __MAIN_H
+#define __MAIN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f4xx_hal.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Exported types ------------------------------------------------------------*/
+/* USER CODE BEGIN ET */
+
+/* USER CODE END ET */
+
+/* Exported constants --------------------------------------------------------*/
+/* USER CODE BEGIN EC */
+
+/* USER CODE END EC */
+
+/* Exported macro ------------------------------------------------------------*/
+/* USER CODE BEGIN EM */
+
+/* USER CODE END EM */
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
+/* Exported functions prototypes ---------------------------------------------*/
+void Error_Handler(void);
+
+/* USER CODE BEGIN EFP */
+
+/* USER CODE END EFP */
+
+/* Private defines -----------------------------------------------------------*/
+#define DHT_PIN_Pin GPIO_PIN_0
+#define DHT_PIN_GPIO_Port GPIOC
+#define SD_CS_Pin GPIO_PIN_4
+#define SD_CS_GPIO_Port GPIOA
+
+/* USER CODE BEGIN Private defines */
+
+/* USER CODE END Private defines */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __MAIN_H */
+
+```
+
+### FILE: ./Inc/stm32f4xx_hal_conf.h
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_hal_conf_template.h
+  * @author  MCD Application Team
+  * @brief   HAL configuration template file.
+  *          This file should be copied to the application folder and renamed
+  *          to stm32f4xx_hal_conf.h.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __STM32F4xx_HAL_CONF_H
+#define __STM32F4xx_HAL_CONF_H
+
+#ifdef __cplusplus
+ extern "C" {
+#endif
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+
+/* ########################## Module Selection ############################## */
+/**
+  * @brief This is the list of modules to be used in the HAL driver
+  */
+#define HAL_MODULE_ENABLED
+
+  /* #define HAL_CRYP_MODULE_ENABLED */
+#define HAL_ADC_MODULE_ENABLED
+/* #define HAL_CAN_MODULE_ENABLED */
+/* #define HAL_CRC_MODULE_ENABLED */
+/* #define HAL_CAN_LEGACY_MODULE_ENABLED */
+/* #define HAL_DAC_MODULE_ENABLED */
+/* #define HAL_DCMI_MODULE_ENABLED */
+/* #define HAL_DMA2D_MODULE_ENABLED */
+/* #define HAL_ETH_MODULE_ENABLED */
+/* #define HAL_ETH_LEGACY_MODULE_ENABLED */
+/* #define HAL_NAND_MODULE_ENABLED */
+/* #define HAL_NOR_MODULE_ENABLED */
+/* #define HAL_PCCARD_MODULE_ENABLED */
+/* #define HAL_SRAM_MODULE_ENABLED */
+/* #define HAL_SDRAM_MODULE_ENABLED */
+/* #define HAL_HASH_MODULE_ENABLED */
+#define HAL_I2C_MODULE_ENABLED
+/* #define HAL_I2S_MODULE_ENABLED */
+/* #define HAL_IWDG_MODULE_ENABLED */
+/* #define HAL_LTDC_MODULE_ENABLED */
+/* #define HAL_RNG_MODULE_ENABLED */
+/* #define HAL_RTC_MODULE_ENABLED */
+/* #define HAL_SAI_MODULE_ENABLED */
+/* #define HAL_SD_MODULE_ENABLED */
+/* #define HAL_MMC_MODULE_ENABLED */
+#define HAL_SPI_MODULE_ENABLED
+#define HAL_TIM_MODULE_ENABLED
+#define HAL_UART_MODULE_ENABLED
+/* #define HAL_USART_MODULE_ENABLED */
+/* #define HAL_IRDA_MODULE_ENABLED */
+/* #define HAL_SMARTCARD_MODULE_ENABLED */
+/* #define HAL_SMBUS_MODULE_ENABLED */
+/* #define HAL_WWDG_MODULE_ENABLED */
+/* #define HAL_PCD_MODULE_ENABLED */
+/* #define HAL_HCD_MODULE_ENABLED */
+/* #define HAL_DSI_MODULE_ENABLED */
+/* #define HAL_QSPI_MODULE_ENABLED */
+/* #define HAL_QSPI_MODULE_ENABLED */
+/* #define HAL_CEC_MODULE_ENABLED */
+/* #define HAL_FMPI2C_MODULE_ENABLED */
+/* #define HAL_FMPSMBUS_MODULE_ENABLED */
+/* #define HAL_SPDIFRX_MODULE_ENABLED */
+/* #define HAL_DFSDM_MODULE_ENABLED */
+/* #define HAL_LPTIM_MODULE_ENABLED */
+#define HAL_GPIO_MODULE_ENABLED
+#define HAL_EXTI_MODULE_ENABLED
+#define HAL_DMA_MODULE_ENABLED
+#define HAL_RCC_MODULE_ENABLED
+#define HAL_FLASH_MODULE_ENABLED
+#define HAL_PWR_MODULE_ENABLED
+#define HAL_CORTEX_MODULE_ENABLED
+
+/* ########################## HSE/HSI Values adaptation ##################### */
+/**
+  * @brief Adjust the value of External High Speed oscillator (HSE) used in your application.
+  *        This value is used by the RCC HAL module to compute the system frequency
+  *        (when HSE is used as system clock source, directly or through the PLL).
+  */
+#if !defined  (HSE_VALUE)
+  #define HSE_VALUE    8000000U /*!< Value of the External oscillator in Hz */
+#endif /* HSE_VALUE */
+
+#if !defined  (HSE_STARTUP_TIMEOUT)
+  #define HSE_STARTUP_TIMEOUT    100U   /*!< Time out for HSE start up, in ms */
+#endif /* HSE_STARTUP_TIMEOUT */
+
+/**
+  * @brief Internal High Speed oscillator (HSI) value.
+  *        This value is used by the RCC HAL module to compute the system frequency
+  *        (when HSI is used as system clock source, directly or through the PLL).
+  */
+#if !defined  (HSI_VALUE)
+  #define HSI_VALUE    ((uint32_t)16000000U) /*!< Value of the Internal oscillator in Hz*/
+#endif /* HSI_VALUE */
+
+/**
+  * @brief Internal Low Speed oscillator (LSI) value.
+  */
+#if !defined  (LSI_VALUE)
+ #define LSI_VALUE  32000U       /*!< LSI Typical Value in Hz*/
+#endif /* LSI_VALUE */                      /*!< Value of the Internal Low Speed oscillator in Hz
+                                             The real value may vary depending on the variations
+                                             in voltage and temperature.*/
+/**
+  * @brief External Low Speed oscillator (LSE) value.
+  */
+#if !defined  (LSE_VALUE)
+ #define LSE_VALUE  32768U    /*!< Value of the External Low Speed oscillator in Hz */
+#endif /* LSE_VALUE */
+
+#if !defined  (LSE_STARTUP_TIMEOUT)
+  #define LSE_STARTUP_TIMEOUT    5000U   /*!< Time out for LSE start up, in ms */
+#endif /* LSE_STARTUP_TIMEOUT */
+
+/**
+  * @brief External clock source for I2S peripheral
+  *        This value is used by the I2S HAL module to compute the I2S clock source
+  *        frequency, this source is inserted directly through I2S_CKIN pad.
+  */
+#if !defined  (EXTERNAL_CLOCK_VALUE)
+  #define EXTERNAL_CLOCK_VALUE    12288000U /*!< Value of the External audio frequency in Hz*/
+#endif /* EXTERNAL_CLOCK_VALUE */
+
+/* Tip: To avoid modifying this file each time you need to use different HSE,
+   ===  you can define the HSE value in your toolchain compiler preprocessor. */
+
+/* ########################### System Configuration ######################### */
+/**
+  * @brief This is the HAL system configuration section
+  */
+#define  VDD_VALUE		      3300U /*!< Value of VDD in mv */
+#define  TICK_INT_PRIORITY            15U   /*!< tick interrupt priority */
+#define  USE_RTOS                     0U
+#define  PREFETCH_ENABLE              1U
+#define  INSTRUCTION_CACHE_ENABLE     1U
+#define  DATA_CACHE_ENABLE            1U
+
+#define  USE_HAL_ADC_REGISTER_CALLBACKS         0U /* ADC register callback disabled       */
+#define  USE_HAL_CAN_REGISTER_CALLBACKS         0U /* CAN register callback disabled       */
+#define  USE_HAL_CEC_REGISTER_CALLBACKS         0U /* CEC register callback disabled       */
+#define  USE_HAL_CRYP_REGISTER_CALLBACKS        0U /* CRYP register callback disabled      */
+#define  USE_HAL_DAC_REGISTER_CALLBACKS         0U /* DAC register callback disabled       */
+#define  USE_HAL_DCMI_REGISTER_CALLBACKS        0U /* DCMI register callback disabled      */
+#define  USE_HAL_DFSDM_REGISTER_CALLBACKS       0U /* DFSDM register callback disabled     */
+#define  USE_HAL_DMA2D_REGISTER_CALLBACKS       0U /* DMA2D register callback disabled     */
+#define  USE_HAL_DSI_REGISTER_CALLBACKS         0U /* DSI register callback disabled       */
+#define  USE_HAL_ETH_REGISTER_CALLBACKS         0U /* ETH register callback disabled       */
+#define  USE_HAL_HASH_REGISTER_CALLBACKS        0U /* HASH register callback disabled      */
+#define  USE_HAL_HCD_REGISTER_CALLBACKS         0U /* HCD register callback disabled       */
+#define  USE_HAL_I2C_REGISTER_CALLBACKS         0U /* I2C register callback disabled       */
+#define  USE_HAL_FMPI2C_REGISTER_CALLBACKS      0U /* FMPI2C register callback disabled    */
+#define  USE_HAL_FMPSMBUS_REGISTER_CALLBACKS    0U /* FMPSMBUS register callback disabled  */
+#define  USE_HAL_I2S_REGISTER_CALLBACKS         0U /* I2S register callback disabled       */
+#define  USE_HAL_IRDA_REGISTER_CALLBACKS        0U /* IRDA register callback disabled      */
+#define  USE_HAL_LPTIM_REGISTER_CALLBACKS       0U /* LPTIM register callback disabled     */
+#define  USE_HAL_LTDC_REGISTER_CALLBACKS        0U /* LTDC register callback disabled      */
+#define  USE_HAL_MMC_REGISTER_CALLBACKS         0U /* MMC register callback disabled       */
+#define  USE_HAL_NAND_REGISTER_CALLBACKS        0U /* NAND register callback disabled      */
+#define  USE_HAL_NOR_REGISTER_CALLBACKS         0U /* NOR register callback disabled       */
+#define  USE_HAL_PCCARD_REGISTER_CALLBACKS      0U /* PCCARD register callback disabled    */
+#define  USE_HAL_PCD_REGISTER_CALLBACKS         0U /* PCD register callback disabled       */
+#define  USE_HAL_QSPI_REGISTER_CALLBACKS        0U /* QSPI register callback disabled      */
+#define  USE_HAL_RNG_REGISTER_CALLBACKS         0U /* RNG register callback disabled       */
+#define  USE_HAL_RTC_REGISTER_CALLBACKS         0U /* RTC register callback disabled       */
+#define  USE_HAL_SAI_REGISTER_CALLBACKS         0U /* SAI register callback disabled       */
+#define  USE_HAL_SD_REGISTER_CALLBACKS          0U /* SD register callback disabled        */
+#define  USE_HAL_SMARTCARD_REGISTER_CALLBACKS   0U /* SMARTCARD register callback disabled */
+#define  USE_HAL_SDRAM_REGISTER_CALLBACKS       0U /* SDRAM register callback disabled     */
+#define  USE_HAL_SRAM_REGISTER_CALLBACKS        0U /* SRAM register callback disabled      */
+#define  USE_HAL_SPDIFRX_REGISTER_CALLBACKS     0U /* SPDIFRX register callback disabled   */
+#define  USE_HAL_SMBUS_REGISTER_CALLBACKS       0U /* SMBUS register callback disabled     */
+#define  USE_HAL_SPI_REGISTER_CALLBACKS         0U /* SPI register callback disabled       */
+#define  USE_HAL_TIM_REGISTER_CALLBACKS         0U /* TIM register callback disabled       */
+#define  USE_HAL_UART_REGISTER_CALLBACKS        0U /* UART register callback disabled      */
+#define  USE_HAL_USART_REGISTER_CALLBACKS       0U /* USART register callback disabled     */
+#define  USE_HAL_WWDG_REGISTER_CALLBACKS        0U /* WWDG register callback disabled      */
+
+/* ########################## Assert Selection ############################## */
+/**
+  * @brief Uncomment the line below to expanse the "assert_param" macro in the
+  *        HAL drivers code
+  */
+/* #define USE_FULL_ASSERT    1U */
+
+/* ################## Ethernet peripheral configuration ##################### */
+
+/* Section 1 : Ethernet peripheral configuration */
+
+/* MAC ADDRESS: MAC_ADDR0:MAC_ADDR1:MAC_ADDR2:MAC_ADDR3:MAC_ADDR4:MAC_ADDR5 */
+#define MAC_ADDR0   2U
+#define MAC_ADDR1   0U
+#define MAC_ADDR2   0U
+#define MAC_ADDR3   0U
+#define MAC_ADDR4   0U
+#define MAC_ADDR5   0U
+
+/* Definition of the Ethernet driver buffers size and count */
+#define ETH_RX_BUF_SIZE                ETH_MAX_PACKET_SIZE /* buffer size for receive               */
+#define ETH_TX_BUF_SIZE                ETH_MAX_PACKET_SIZE /* buffer size for transmit              */
+#define ETH_RXBUFNB                    4U       /* 4 Rx buffers of size ETH_RX_BUF_SIZE  */
+#define ETH_TXBUFNB                    4U       /* 4 Tx buffers of size ETH_TX_BUF_SIZE  */
+
+/* Section 2: PHY configuration section */
+
+/* DP83848_PHY_ADDRESS Address*/
+#define DP83848_PHY_ADDRESS
+/* PHY Reset delay these values are based on a 1 ms Systick interrupt*/
+#define PHY_RESET_DELAY                 0x000000FFU
+/* PHY Configuration delay */
+#define PHY_CONFIG_DELAY                0x00000FFFU
+
+#define PHY_READ_TO                     0x0000FFFFU
+#define PHY_WRITE_TO                    0x0000FFFFU
+
+/* Section 3: Common PHY Registers */
+
+#define PHY_BCR                         ((uint16_t)0x0000U)    /*!< Transceiver Basic Control Register   */
+#define PHY_BSR                         ((uint16_t)0x0001U)    /*!< Transceiver Basic Status Register    */
+
+#define PHY_RESET                       ((uint16_t)0x8000U)  /*!< PHY Reset */
+#define PHY_LOOPBACK                    ((uint16_t)0x4000U)  /*!< Select loop-back mode */
+#define PHY_FULLDUPLEX_100M             ((uint16_t)0x2100U)  /*!< Set the full-duplex mode at 100 Mb/s */
+#define PHY_HALFDUPLEX_100M             ((uint16_t)0x2000U)  /*!< Set the half-duplex mode at 100 Mb/s */
+#define PHY_FULLDUPLEX_10M              ((uint16_t)0x0100U)  /*!< Set the full-duplex mode at 10 Mb/s  */
+#define PHY_HALFDUPLEX_10M              ((uint16_t)0x0000U)  /*!< Set the half-duplex mode at 10 Mb/s  */
+#define PHY_AUTONEGOTIATION             ((uint16_t)0x1000U)  /*!< Enable auto-negotiation function     */
+#define PHY_RESTART_AUTONEGOTIATION     ((uint16_t)0x0200U)  /*!< Restart auto-negotiation function    */
+#define PHY_POWERDOWN                   ((uint16_t)0x0800U)  /*!< Select the power down mode           */
+#define PHY_ISOLATE                     ((uint16_t)0x0400U)  /*!< Isolate PHY from MII                 */
+
+#define PHY_AUTONEGO_COMPLETE           ((uint16_t)0x0020U)  /*!< Auto-Negotiation process completed   */
+#define PHY_LINKED_STATUS               ((uint16_t)0x0004U)  /*!< Valid link established               */
+#define PHY_JABBER_DETECTION            ((uint16_t)0x0002U)  /*!< Jabber condition detected            */
+
+/* Section 4: Extended PHY Registers */
+#define PHY_SR                          ((uint16_t))    /*!< PHY status register Offset                      */
+
+#define PHY_SPEED_STATUS                ((uint16_t))  /*!< PHY Speed mask                                  */
+#define PHY_DUPLEX_STATUS               ((uint16_t))  /*!< PHY Duplex mask                                 */
+
+/* ################## SPI peripheral configuration ########################## */
+
+/* CRC FEATURE: Use to activate CRC feature inside HAL SPI Driver
+* Activated: CRC code is present inside driver
+* Deactivated: CRC code cleaned from driver
+*/
+
+#define USE_SPI_CRC                     0U
+
+/* Includes ------------------------------------------------------------------*/
+/**
+  * @brief Include module's header file
+  */
+
+#ifdef HAL_RCC_MODULE_ENABLED
+  #include "stm32f4xx_hal_rcc.h"
+#endif /* HAL_RCC_MODULE_ENABLED */
+
+#ifdef HAL_GPIO_MODULE_ENABLED
+  #include "stm32f4xx_hal_gpio.h"
+#endif /* HAL_GPIO_MODULE_ENABLED */
+
+#ifdef HAL_EXTI_MODULE_ENABLED
+  #include "stm32f4xx_hal_exti.h"
+#endif /* HAL_EXTI_MODULE_ENABLED */
+
+#ifdef HAL_DMA_MODULE_ENABLED
+  #include "stm32f4xx_hal_dma.h"
+#endif /* HAL_DMA_MODULE_ENABLED */
+
+#ifdef HAL_CORTEX_MODULE_ENABLED
+  #include "stm32f4xx_hal_cortex.h"
+#endif /* HAL_CORTEX_MODULE_ENABLED */
+
+#ifdef HAL_ADC_MODULE_ENABLED
+  #include "stm32f4xx_hal_adc.h"
+#endif /* HAL_ADC_MODULE_ENABLED */
+
+#ifdef HAL_CAN_MODULE_ENABLED
+  #include "stm32f4xx_hal_can.h"
+#endif /* HAL_CAN_MODULE_ENABLED */
+
+#ifdef HAL_CAN_LEGACY_MODULE_ENABLED
+  #include "stm32f4xx_hal_can_legacy.h"
+#endif /* HAL_CAN_LEGACY_MODULE_ENABLED */
+
+#ifdef HAL_CRC_MODULE_ENABLED
+  #include "stm32f4xx_hal_crc.h"
+#endif /* HAL_CRC_MODULE_ENABLED */
+
+#ifdef HAL_CRYP_MODULE_ENABLED
+  #include "stm32f4xx_hal_cryp.h"
+#endif /* HAL_CRYP_MODULE_ENABLED */
+
+#ifdef HAL_DMA2D_MODULE_ENABLED
+  #include "stm32f4xx_hal_dma2d.h"
+#endif /* HAL_DMA2D_MODULE_ENABLED */
+
+#ifdef HAL_DAC_MODULE_ENABLED
+  #include "stm32f4xx_hal_dac.h"
+#endif /* HAL_DAC_MODULE_ENABLED */
+
+#ifdef HAL_DCMI_MODULE_ENABLED
+  #include "stm32f4xx_hal_dcmi.h"
+#endif /* HAL_DCMI_MODULE_ENABLED */
+
+#ifdef HAL_ETH_MODULE_ENABLED
+  #include "stm32f4xx_hal_eth.h"
+#endif /* HAL_ETH_MODULE_ENABLED */
+
+#ifdef HAL_ETH_LEGACY_MODULE_ENABLED
+  #include "stm32f4xx_hal_eth_legacy.h"
+#endif /* HAL_ETH_LEGACY_MODULE_ENABLED */
+
+#ifdef HAL_FLASH_MODULE_ENABLED
+  #include "stm32f4xx_hal_flash.h"
+#endif /* HAL_FLASH_MODULE_ENABLED */
+
+#ifdef HAL_SRAM_MODULE_ENABLED
+  #include "stm32f4xx_hal_sram.h"
+#endif /* HAL_SRAM_MODULE_ENABLED */
+
+#ifdef HAL_NOR_MODULE_ENABLED
+  #include "stm32f4xx_hal_nor.h"
+#endif /* HAL_NOR_MODULE_ENABLED */
+
+#ifdef HAL_NAND_MODULE_ENABLED
+  #include "stm32f4xx_hal_nand.h"
+#endif /* HAL_NAND_MODULE_ENABLED */
+
+#ifdef HAL_PCCARD_MODULE_ENABLED
+  #include "stm32f4xx_hal_pccard.h"
+#endif /* HAL_PCCARD_MODULE_ENABLED */
+
+#ifdef HAL_SDRAM_MODULE_ENABLED
+  #include "stm32f4xx_hal_sdram.h"
+#endif /* HAL_SDRAM_MODULE_ENABLED */
+
+#ifdef HAL_HASH_MODULE_ENABLED
+ #include "stm32f4xx_hal_hash.h"
+#endif /* HAL_HASH_MODULE_ENABLED */
+
+#ifdef HAL_I2C_MODULE_ENABLED
+ #include "stm32f4xx_hal_i2c.h"
+#endif /* HAL_I2C_MODULE_ENABLED */
+
+#ifdef HAL_SMBUS_MODULE_ENABLED
+ #include "stm32f4xx_hal_smbus.h"
+#endif /* HAL_SMBUS_MODULE_ENABLED */
+
+#ifdef HAL_I2S_MODULE_ENABLED
+ #include "stm32f4xx_hal_i2s.h"
+#endif /* HAL_I2S_MODULE_ENABLED */
+
+#ifdef HAL_IWDG_MODULE_ENABLED
+ #include "stm32f4xx_hal_iwdg.h"
+#endif /* HAL_IWDG_MODULE_ENABLED */
+
+#ifdef HAL_LTDC_MODULE_ENABLED
+ #include "stm32f4xx_hal_ltdc.h"
+#endif /* HAL_LTDC_MODULE_ENABLED */
+
+#ifdef HAL_PWR_MODULE_ENABLED
+ #include "stm32f4xx_hal_pwr.h"
+#endif /* HAL_PWR_MODULE_ENABLED */
+
+#ifdef HAL_RNG_MODULE_ENABLED
+ #include "stm32f4xx_hal_rng.h"
+#endif /* HAL_RNG_MODULE_ENABLED */
+
+#ifdef HAL_RTC_MODULE_ENABLED
+ #include "stm32f4xx_hal_rtc.h"
+#endif /* HAL_RTC_MODULE_ENABLED */
+
+#ifdef HAL_SAI_MODULE_ENABLED
+ #include "stm32f4xx_hal_sai.h"
+#endif /* HAL_SAI_MODULE_ENABLED */
+
+#ifdef HAL_SD_MODULE_ENABLED
+ #include "stm32f4xx_hal_sd.h"
+#endif /* HAL_SD_MODULE_ENABLED */
+
+#ifdef HAL_SPI_MODULE_ENABLED
+ #include "stm32f4xx_hal_spi.h"
+#endif /* HAL_SPI_MODULE_ENABLED */
+
+#ifdef HAL_TIM_MODULE_ENABLED
+ #include "stm32f4xx_hal_tim.h"
+#endif /* HAL_TIM_MODULE_ENABLED */
+
+#ifdef HAL_UART_MODULE_ENABLED
+ #include "stm32f4xx_hal_uart.h"
+#endif /* HAL_UART_MODULE_ENABLED */
+
+#ifdef HAL_USART_MODULE_ENABLED
+ #include "stm32f4xx_hal_usart.h"
+#endif /* HAL_USART_MODULE_ENABLED */
+
+#ifdef HAL_IRDA_MODULE_ENABLED
+ #include "stm32f4xx_hal_irda.h"
+#endif /* HAL_IRDA_MODULE_ENABLED */
+
+#ifdef HAL_SMARTCARD_MODULE_ENABLED
+ #include "stm32f4xx_hal_smartcard.h"
+#endif /* HAL_SMARTCARD_MODULE_ENABLED */
+
+#ifdef HAL_WWDG_MODULE_ENABLED
+ #include "stm32f4xx_hal_wwdg.h"
+#endif /* HAL_WWDG_MODULE_ENABLED */
+
+#ifdef HAL_PCD_MODULE_ENABLED
+ #include "stm32f4xx_hal_pcd.h"
+#endif /* HAL_PCD_MODULE_ENABLED */
+
+#ifdef HAL_HCD_MODULE_ENABLED
+ #include "stm32f4xx_hal_hcd.h"
+#endif /* HAL_HCD_MODULE_ENABLED */
+
+#ifdef HAL_DSI_MODULE_ENABLED
+ #include "stm32f4xx_hal_dsi.h"
+#endif /* HAL_DSI_MODULE_ENABLED */
+
+#ifdef HAL_QSPI_MODULE_ENABLED
+ #include "stm32f4xx_hal_qspi.h"
+#endif /* HAL_QSPI_MODULE_ENABLED */
+
+#ifdef HAL_CEC_MODULE_ENABLED
+ #include "stm32f4xx_hal_cec.h"
+#endif /* HAL_CEC_MODULE_ENABLED */
+
+#ifdef HAL_FMPI2C_MODULE_ENABLED
+ #include "stm32f4xx_hal_fmpi2c.h"
+#endif /* HAL_FMPI2C_MODULE_ENABLED */
+
+#ifdef HAL_FMPSMBUS_MODULE_ENABLED
+ #include "stm32f4xx_hal_fmpsmbus.h"
+#endif /* HAL_FMPSMBUS_MODULE_ENABLED */
+
+#ifdef HAL_SPDIFRX_MODULE_ENABLED
+ #include "stm32f4xx_hal_spdifrx.h"
+#endif /* HAL_SPDIFRX_MODULE_ENABLED */
+
+#ifdef HAL_DFSDM_MODULE_ENABLED
+ #include "stm32f4xx_hal_dfsdm.h"
+#endif /* HAL_DFSDM_MODULE_ENABLED */
+
+#ifdef HAL_LPTIM_MODULE_ENABLED
+ #include "stm32f4xx_hal_lptim.h"
+#endif /* HAL_LPTIM_MODULE_ENABLED */
+
+#ifdef HAL_MMC_MODULE_ENABLED
+ #include "stm32f4xx_hal_mmc.h"
+#endif /* HAL_MMC_MODULE_ENABLED */
+
+/* Exported macro ------------------------------------------------------------*/
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  The assert_param macro is used for function's parameters check.
+  * @param  expr If expr is false, it calls assert_failed function
+  *         which reports the name of the source file and the source
+  *         line number of the call that failed.
+  *         If expr is true, it returns no value.
+  * @retval None
+  */
+  #define assert_param(expr) ((expr) ? (void)0U : assert_failed((uint8_t *)__FILE__, __LINE__))
+/* Exported functions ------------------------------------------------------- */
+  void assert_failed(uint8_t* file, uint32_t line);
+#else
+  #define assert_param(expr) ((void)0U)
+#endif /* USE_FULL_ASSERT */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __STM32F4xx_HAL_CONF_H */
+
+```
+
+### FILE: ./Inc/stm32f4xx_it.h
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_it.h
+  * @brief   This file contains the headers of the interrupt handlers.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __STM32F4xx_IT_H
+#define __STM32F4xx_IT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Exported types ------------------------------------------------------------*/
+/* USER CODE BEGIN ET */
+
+/* USER CODE END ET */
+
+/* Exported constants --------------------------------------------------------*/
+/* USER CODE BEGIN EC */
+
+/* USER CODE END EC */
+
+/* Exported macro ------------------------------------------------------------*/
+/* USER CODE BEGIN EM */
+
+/* USER CODE END EM */
+
+/* Exported functions prototypes ---------------------------------------------*/
+void NMI_Handler(void);
+void HardFault_Handler(void);
+void MemManage_Handler(void);
+void BusFault_Handler(void);
+void UsageFault_Handler(void);
+void DebugMon_Handler(void);
+void SysTick_Handler(void);
+void DMA1_Stream1_IRQHandler(void);
+void DMA1_Stream3_IRQHandler(void);
+void DMA1_Stream6_IRQHandler(void);
+void ADC_IRQHandler(void);
+void TIM2_IRQHandler(void);
+void I2C1_EV_IRQHandler(void);
+void I2C1_ER_IRQHandler(void);
+void SPI1_IRQHandler(void);
+void USART2_IRQHandler(void);
+void USART3_IRQHandler(void);
+void DMA2_Stream0_IRQHandler(void);
+void DMA2_Stream1_IRQHandler(void);
+void DMA2_Stream3_IRQHandler(void);
+void DMA2_Stream4_IRQHandler(void);
+void USART6_IRQHandler(void);
+/* USER CODE BEGIN EFP */
+
+/* USER CODE END EFP */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __STM32F4xx_IT_H */
+
+```
+
+### FILE: ./Inc/tasks/task_compass.h
+```c
+#ifndef TASK_COMPASS_H
+#define TASK_COMPASS_H
+#include "main.h"
+void CompassTask(void *arg);
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_debug.h
+```c
+#ifndef TASK_DEBUG_H
+#define TASK_DEBUG_H
+
+#include "main.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+/* ══════════════════════════════════════════════════════════════════════
+ *  GPS + Compass debug state — shared across task_debug, task_gps,
+ *  and task_compass.
+ *
+ *  Defined (storage) in task_debug.c.
+ *  Written by task_gps.c and task_compass.c.
+ *  Read (display) by DebugTask in task_debug.c.
+ * ══════════════════════════════════════════════════════════════════════ */
+typedef struct {
+    /* sentence accounting */
+    uint32_t sentences_rx;      /* every '$' sentence received on DMA */
+    uint32_t rmc_parsed;        /* successful $GPRMC / $GNRMC parses  */
+
+    /* fix quality — from $GPGSA / $GNGSA */
+    uint8_t  fix_mode;          /* 1 = none, 2 = 2D, 3 = 3D           */
+    uint8_t  sats_used;         /* non-empty SV fields in GSA          */
+    float    pdop;
+    float    hdop;
+    float    vdop;
+
+    /* satellite view — from $GPGSV / $GNGSV */
+    uint8_t  sats_in_view;      /* field 3 of first GSV sentence       */
+
+    /* timing / status */
+    uint32_t last_rmc_tick;     /* xTaskGetTickCount() at last RMC     */
+    char     last_status;       /* 'A' (active) or 'V' (void)          */
+
+    /* compass raw (written by task_compass.c) */
+    int16_t  cmp_raw_x;
+    int16_t  cmp_raw_y;
+    int16_t  cmp_raw_z;
+    uint32_t cmp_read_errors;
+    uint32_t cmp_overflows;
+} GPS_Debug_State_t;
+
+/* Storage in task_debug.c — extern for everyone else */
+extern GPS_Debug_State_t g_gps_dbg;
+
+/* ── Public API ───────────────────────────────────────────────────── */
+void DebugTask(void *arg);
+void debug_printf(const char *fmt, ...);
+
+#endif /* TASK_DEBUG_H */
+
+```
+
+### FILE: ./Inc/tasks/task_flysky.h
+```c
+#ifndef TASK_FLYSKY_H
+#define TASK_FLYSKY_H
+#include "main.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+typedef struct {
+    TIM_HandleTypeDef *htim;
+    uint32_t           channel;
+} FlySkyTaskArg_t;
+
+void FlySkyTask(void *arg);
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_gps.h
+```c
+#ifndef TASK_GPS_H
+#define TASK_GPS_H
+#include "main.h"
+void GPSTask(void *arg);      /* arg = UART_HandleTypeDef* (huart6) */
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_motor.h
+```c
+/* task_motor.h */
+#ifndef TASK_MOTOR_H
+#define TASK_MOTOR_H
+#include "main.h"
+void MotorTask(void *arg);
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_rpi.h
+```c
+#ifndef TASK_RPI_H
+#define TASK_RPI_H
+#include "main.h"
+void RpiUARTTask(void *arg);  /* arg = UART_HandleTypeDef* (huart3) */
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_sdlog.h
+```c
+#ifndef TASK_SDLOG_H
+#define TASK_SDLOG_H
+#include "main.h"
+void SDLogTask(void *arg);
+#endif
+
+```
+
+### FILE: ./Inc/tasks/task_sensors.h
+```c
+#ifndef TASK_SENSORS_H
+#define TASK_SENSORS_H
+#include "main.h"
+void SensorTask(void *arg);
+#endif
+
+```
+
+### FILE: ./Src/drivers/compass.c
+```c
+/*
+ * compass.c
+ * Auto-detects HMC5883L (0x1E) or QMC5883L (0x0D).
+ * NEO-M8N APM modules use QMC5883L.
+ *
+ * HMC5883L register map:
+ *   0x00 Config A, 0x01 Config B, 0x02 Mode
+ *   0x03-0x08 Data: XH XL ZH ZL YH YL  (MSB first)
+ *   0x0A-0x0C ID: 'H' '4' '3'
+ *
+ * QMC5883L register map:
+ *   0x00-0x05 Data: XL XH YL YH ZL ZH  (LSB first, XYZ order)
+ *   0x09 Control 1 (mode/ODR/range/OSR)
+ *   0x0A Control 2
+ *   0x0B SET/RESET period
+ *   0x0D Chip ID (reads 0xFF)
+ */
+
+#include "drivers/compass.h"
+#include "cmsis_os.h"
+#include <math.h>
+
+#define I2C_TIMEOUT    100U   /* ms */
+
+static CompassChip_t s_chip = COMPASS_CHIP_UNKNOWN;
+
+/* ── Low-level helpers ───────────────────────────────────────── */
+static bool i2c_write_reg(I2C_HandleTypeDef *hi2c,
+                           uint16_t addr, uint8_t reg, uint8_t val)
+{
+    uint8_t buf[2] = { reg, val };
+    return HAL_I2C_Master_Transmit(hi2c, addr, buf, 2, I2C_TIMEOUT) == HAL_OK;
+}
+
+static bool i2c_read_reg(I2C_HandleTypeDef *hi2c,
+                          uint16_t addr, uint8_t reg,
+                          uint8_t *buf, uint8_t len)
+{
+    if (HAL_I2C_Master_Transmit(hi2c, addr, &reg, 1, I2C_TIMEOUT) != HAL_OK)
+        return false;
+    return HAL_I2C_Master_Receive(hi2c, addr, buf, len, I2C_TIMEOUT) == HAL_OK;
+}
+
+/* ── HMC5883L init ───────────────────────────────────────────── */
+static bool hmc_init(I2C_HandleTypeDef *hi2c)
+{
+    /* Verify ID registers read "H43" */
+    uint8_t id[3] = {0};
+    if (!i2c_read_reg(hi2c, HMC5883L_ADDR, 0x0A, id, 3)) return false;
+    if (id[0] != 'H' || id[1] != '4' || id[2] != '3')    return false;
+
+    /* Config A: 8 samples avg, 15Hz, normal measurement */
+    if (!i2c_write_reg(hi2c, HMC5883L_ADDR, 0x00, 0x70)) return false;
+    /* Config B: gain 1090 LSB/Gauss (±1.3 Ga) */
+    if (!i2c_write_reg(hi2c, HMC5883L_ADDR, 0x01, 0x20)) return false;
+    /* Mode: continuous */
+    if (!i2c_write_reg(hi2c, HMC5883L_ADDR, 0x02, 0x00)) return false;
+
+    osDelay(10);
+    return true;
+}
+
+/* ── QMC5883L init ───────────────────────────────────────────── */
+static bool qmc_init(I2C_HandleTypeDef *hi2c)
+{
+    /* Read chip ID — QMC5883L returns 0xFF at register 0x0D */
+    uint8_t id = 0;
+    if (!i2c_read_reg(hi2c, QMC5883L_ADDR, 0x0D, &id, 1)) return false;
+    if (id != 0xFF) return false;
+
+    /* SET/RESET period — must be written first (datasheet requirement) */
+    if (!i2c_write_reg(hi2c, QMC5883L_ADDR, 0x0B, 0x01)) return false;
+
+    /*
+     * Control Register 1:
+     *   Bits[1:0] MODE = 01  continuous measurement
+     *   Bits[3:2] ODR  = 10  100 Hz output rate
+     *   Bits[5:4] RNG  = 00  ±2 Gauss range
+     *   Bits[7:6] OSR  = 00  512 samples (best noise suppression)
+     *   Value = 0b00_00_10_01 = 0x09
+     */
+    if (!i2c_write_reg(hi2c, QMC5883L_ADDR, 0x09, 0x09)) return false;
+
+    /* Control Register 2: interrupts disabled, no soft reset */
+    if (!i2c_write_reg(hi2c, QMC5883L_ADDR, 0x0A, 0x00)) return false;
+
+    osDelay(10);
+    return true;
+}
+
+/* ── HMC5883L read ───────────────────────────────────────────── */
+static bool hmc_read(I2C_HandleTypeDef *hi2c, Compass_Data_t *out)
+{
+    uint8_t buf[6];
+    /* Data register 0x03: XH XL ZH ZL YH YL */
+    if (!i2c_read_reg(hi2c, HMC5883L_ADDR, 0x03, buf, 6))
+    {
+        out->valid = false;
+        return false;
+    }
+
+    int16_t x = (int16_t)((buf[0] << 8) | buf[1]);
+    /* z = buf[2..3] — not used for 2D heading */
+    int16_t y = (int16_t)((buf[4] << 8) | buf[5]);
+
+    /* Overflow check */
+    if (x == -4096 || y == -4096)
+    {
+        out->valid = false;
+        return false;
+    }
+
+    float heading = atan2f((float)y, (float)x) * (180.0f / (float)M_PI);
+    if (heading < 0.0f) heading += 360.0f;
+
+    out->heading_deg = heading;
+    out->valid       = true;
+    out->chip        = COMPASS_CHIP_HMC5883L;
+    return true;
+}
+
+/* ── QMC5883L read ───────────────────────────────────────────── */
+static bool qmc_read(I2C_HandleTypeDef *hi2c, Compass_Data_t *out)
+{
+    uint8_t buf[6];
+    /* Data register 0x00: XL XH YL YH ZL ZH */
+    if (!i2c_read_reg(hi2c, QMC5883L_ADDR, 0x00, buf, 6))
+    {
+        out->valid = false;
+        return false;
+    }
+
+    /* QMC5883L is LSB first — opposite byte order from HMC5883L */
+    int16_t x = (int16_t)((buf[1] << 8) | buf[0]);
+    int16_t y = (int16_t)((buf[3] << 8) | buf[2]);
+    /* z = buf[4..5] — not used */
+
+    /* Overflow: QMC returns -4096 on overflow same as HMC */
+    if (x == -4096 || y == -4096)
+    {
+        out->valid = false;
+        return false;
+    }
+
+    float heading = atan2f((float)y, (float)x) * (180.0f / (float)M_PI);
+    if (heading < 0.0f) heading += 360.0f;
+
+    out->heading_deg = heading;
+    out->valid       = true;
+    out->chip        = COMPASS_CHIP_QMC5883L;
+    return true;
+}
+
+/* ── Public API ──────────────────────────────────────────────── */
+bool Compass_Init(I2C_HandleTypeDef *hi2c)
+{
+    /* Try QMC5883L first — more common on NEO-M8N APM modules */
+    if (qmc_init(hi2c))
+    {
+        s_chip = COMPASS_CHIP_QMC5883L;
+        return true;
+    }
+
+    /* Fallback: try HMC5883L */
+    if (hmc_init(hi2c))
+    {
+        s_chip = COMPASS_CHIP_HMC5883L;
+        return true;
+    }
+
+    s_chip = COMPASS_CHIP_UNKNOWN;
+    return false;
+}
+
+bool Compass_Read(I2C_HandleTypeDef *hi2c, Compass_Data_t *out)
+{
+    switch (s_chip)
+    {
+        case COMPASS_CHIP_QMC5883L: return qmc_read(hi2c, out);
+        case COMPASS_CHIP_HMC5883L: return hmc_read(hi2c, out);
+        default:
+            out->valid = false;
+            return false;
+    }
+}
+
+CompassChip_t Compass_GetChip(void)
+{
+    return s_chip;
+}
+
+```
+
+### FILE: ./Src/drivers/dht11.c
+```c
+/*
+ * dht11.c
+ * Bit-bang DHT11 driver using DWT cycle counter for µs timing.
+ * PC0 → DHT11 data line (external 4.7kΩ pull-up to 3.3V required).
+ *
+ * Timing reference (DHT11 datasheet):
+ *   Host start:  pull low ≥18ms, then release
+ *   Sensor resp: pull low 80µs, then high 80µs
+ *   Bit '0':     low 50µs, high 26–28µs
+ *   Bit '1':     low 50µs, high 70µs
+ *   Decision threshold: if high pulse > 40µs → '1', else '0'
+ */
+
+#include "drivers/dht11.h"
+#include "cmsis_os.h"
+
+/* ── DWT µs delay ─────────────────────────────────────────────────────── */
+static void delay_us(uint32_t us)
+{
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (SystemCoreClock / 1000000U);
+    while ((DWT->CYCCNT - start) < ticks);
+}
+
+/* ── Pin helpers ─────────────────────────────────────────────────────── */
+static void pin_output(void)
+{
+    GPIO_InitTypeDef g = {0};
+    g.Pin   = DHT11_GPIO_PIN;
+    g.Mode  = GPIO_MODE_OUTPUT_PP;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(DHT11_GPIO_PORT, &g);
+}
+
+static void pin_input(void)
+{
+    GPIO_InitTypeDef g = {0};
+    g.Pin  = DHT11_GPIO_PIN;
+    g.Mode = GPIO_MODE_INPUT;
+    g.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(DHT11_GPIO_PORT, &g);
+}
+
+static inline void pin_low(void)  { HAL_GPIO_WritePin(DHT11_GPIO_PORT, DHT11_GPIO_PIN, GPIO_PIN_RESET); }
+static inline void pin_high(void) { HAL_GPIO_WritePin(DHT11_GPIO_PORT, DHT11_GPIO_PIN, GPIO_PIN_SET);   }
+static inline uint8_t pin_read(void) { return HAL_GPIO_ReadPin(DHT11_GPIO_PORT, DHT11_GPIO_PIN); }
+
+/* ── Wait for pin state with timeout (µs) ───────────────────────────── */
+static bool wait_pin(uint8_t state, uint32_t timeout_us)
+{
+    uint32_t start = DWT->CYCCNT;
+    uint32_t limit = timeout_us * (SystemCoreClock / 1000000U);
+    while (pin_read() != state) {
+        if ((DWT->CYCCNT - start) >= limit) return false;
+    }
+    return true;
+}
+
+/* ── Public API ──────────────────────────────────────────────────────── */
+void DHT11_Init(void)
+{
+    /* Ensure DWT is running — also done in main USER CODE BEGIN 2 */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT       = 0;
+    DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;
+
+    pin_input();   /* idle: line pulled high externally */
+    osDelay(2000); /* wait 2s on power-up for DHT11 to stabilise */
+}
+
+DHT11_Status_t DHT11_Read(DHT11_Data_t *out)
+{
+    uint8_t data[5] = {0};
+
+    /* ── 1. Host start signal ── */
+    pin_output();
+    pin_low();
+    osDelay(20);           /* ≥18ms low */
+    pin_high();
+    delay_us(30);          /* 20–40µs high before releasing */
+    pin_input();
+
+    /* ── 2. Sensor response ── */
+    if (!wait_pin(GPIO_PIN_RESET, 100)) return DHT11_ERR_TIMEOUT;  /* low 80µs */
+    if (!wait_pin(GPIO_PIN_SET,   100)) return DHT11_ERR_TIMEOUT;  /* high 80µs */
+    if (!wait_pin(GPIO_PIN_RESET, 100)) return DHT11_ERR_TIMEOUT;  /* falling edge = data start */
+
+    /* ── 3. Read 40 bits ── */
+    for (int i = 0; i < 40; i++) {
+        /* Each bit starts with a ~50µs low pulse */
+        if (!wait_pin(GPIO_PIN_SET, 70)) return DHT11_ERR_TIMEOUT;  /* wait for rising edge */
+
+        /* Measure high pulse width to determine bit value */
+        delay_us(40);   /* wait 40µs: if still high → bit=1, else bit=0 */
+
+        data[i / 8] <<= 1;
+        if (pin_read() == GPIO_PIN_SET) {
+            data[i / 8] |= 0x01;
+        }
+
+        /* Wait for falling edge before next bit */
+        if (!wait_pin(GPIO_PIN_RESET, 100)) return DHT11_ERR_TIMEOUT;
+    }
+
+    /* ── 4. Checksum ── */
+    uint8_t sum = data[0] + data[1] + data[2] + data[3];
+    if (sum != data[4]) return DHT11_ERR_CHECKSUM;
+
+    /* ── 5. Extract values ── */
+    /* DHT11: integer + decimal bytes for humidity and temperature */
+    out->humidity    = (float)data[0] + (float)data[1] * 0.1f;
+    out->temperature = (float)data[2] + (float)data[3] * 0.1f;
+
+    return DHT11_OK;
+}
+
+```
+
+### FILE: ./Src/drivers/gps_nmea.c
+```c
+/*
+ * gps_nmea.c
+ * Minimal NMEA $GPRMC / $GNRMC parser.
+ *
+ * $GPRMC sentence format:
+ *   $GPRMC,hhmmss.ss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,x.x,a*hh<CR><LF>
+ *   Field 0: $GPRMC
+ *   Field 1: UTC time
+ *   Field 2: Status A=active V=void
+ *   Field 3: Latitude  ddmm.mmmm
+ *   Field 4: N/S
+ *   Field 5: Longitude dddmm.mmmm
+ *   Field 6: E/W
+ */
+
+#include "drivers/gps_nmea.h"
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+
+/* ── NMEA ddmm.mmmm → decimal degrees ───────────────────────────────── */
+static float nmea_to_decimal(const char *raw, char dir)
+{
+    if (raw == NULL || raw[0] == '\0') return 0.0f;
+
+    float val = strtof(raw, NULL);
+    int   deg = (int)(val / 100.0f);
+    float min = val - (float)(deg * 100);
+    float dec = (float)deg + min / 60.0f;
+
+    if (dir == 'S' || dir == 'W') dec = -dec;
+    return dec;
+}
+
+/* ── NMEA checksum validator ─────────────────────────────────────────── */
+static bool nmea_checksum_ok(const char *sentence)
+{
+    /* Format: $...*XX  — XOR of bytes between $ and * */
+    const char *p = sentence + 1;   /* skip $ */
+    uint8_t calc = 0;
+    while (*p && *p != '*') calc ^= (uint8_t)*p++;
+
+    if (*p != '*') return false;     /* no checksum present — accept anyway */
+    p++;                             /* skip * */
+
+    uint8_t recv = (uint8_t)strtol(p, NULL, 16);
+    return (calc == recv);
+}
+
+/* ── Extract nth comma-delimited field from sentence ─────────────────── */
+static void get_field(const char *sentence, int n, char *out, int maxlen)
+{
+    int  field = 0;
+    int  i     = 0;
+    int  j     = 0;
+
+    out[0] = '\0';
+    while (sentence[i] != '\0') {
+        if (sentence[i] == ',') {
+            if (field == n) { out[j] = '\0'; return; }
+            field++;
+            j = 0;
+        } else if (field == n) {
+            if (j < maxlen - 1) out[j++] = sentence[i];
+        }
+        i++;
+    }
+    /* end of string */
+    if (field == n) out[j] = '\0';
+}
+
+/* ── Public API ──────────────────────────────────────────────────────── */
+bool GPS_ParseRMC(const char *sentence, GPS_Data_t *out)
+{
+    out->valid = false;
+
+    /* Accept $GPRMC and $GNRMC */
+    if (strncmp(sentence, "$GPRMC", 6) != 0 &&
+        strncmp(sentence, "$GNRMC", 6) != 0) return false;
+
+    /* Optional checksum validation */
+    if (!nmea_checksum_ok(sentence)) return false;
+
+    char field[16];
+
+    /* Field 2: status A=active */
+    get_field(sentence, 2, field, sizeof(field));
+    if (field[0] != 'A') return false;   /* void fix */
+
+    /* Field 3: latitude */
+    char lat_raw[16], lat_dir[4];
+    get_field(sentence, 3, lat_raw,  sizeof(lat_raw));
+    get_field(sentence, 4, lat_dir,  sizeof(lat_dir));
+
+    /* Field 5: longitude */
+    char lon_raw[16], lon_dir[4];
+    get_field(sentence, 5, lon_raw,  sizeof(lon_raw));
+    get_field(sentence, 6, lon_dir,  sizeof(lon_dir));
+
+    if (lat_raw[0] == '\0' || lon_raw[0] == '\0') return false;
+
+    out->latitude  = nmea_to_decimal(lat_raw, lat_dir[0]);
+    out->longitude = nmea_to_decimal(lon_raw, lon_dir[0]);
+    out->valid     = true;
+    return true;
+}
+
+```
+
+### FILE: ./Src/freertos.c
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * File Name          : freertos.c
+  * Description        : Code for freertos applications
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "FreeRTOS.h"
+#include "task.h"
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN Variables */
+
+/* USER CODE END Variables */
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN FunctionPrototypes */
+
+/* USER CODE END FunctionPrototypes */
+
+/* Hook prototypes */
+void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName);
+void vApplicationMallocFailedHook(void);
+
+/* USER CODE BEGIN 4 */
+void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
+{
+   /* Run time stack overflow checking is performed if
+   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
+   called if a stack overflow is detected. */
+    (void)xTask;
+    (void)pcTaskName;
+    /* pcTaskName is readable in the debugger — set a breakpoint here */
+    __disable_irq();
+    while (1) {}
+}
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN 5 */
+void vApplicationMallocFailedHook(void)
+{
+   /* vApplicationMallocFailedHook() will only be called if
+   configUSE_MALLOC_FAILED_HOOK is set to 1 in FreeRTOSConfig.h. It is a hook
+   function that will get called if a call to pvPortMalloc() fails.
+   pvPortMalloc() is called internally by the kernel whenever a task, queue,
+   timer or semaphore is created. It is also called by various parts of the
+   demo application. If heap_1.c or heap_2.c are used, then the size of the
+   heap available to pvPortMalloc() is defined by configTOTAL_HEAP_SIZE in
+   FreeRTOSConfig.h, and the xPortGetFreeHeapSize() API function can be used
+   to query the size of free heap space that remains (although it does not
+   provide information on how the remaining heap might be fragmented). */
+    __disable_irq();
+    while (1) {}
+}
+/* USER CODE END 5 */
+
+/* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
+
+/* USER CODE END Application */
+
+
+```
+
+### FILE: ./Src/main.c
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "cmsis_os.h"
+#include "fatfs.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "semphr.h"
+#include "app_types.h"
+#include "tasks/task_flysky.h"
+#include "tasks/task_motor.h"
+#include "tasks/task_rpi.h"
+#include "tasks/task_sensors.h"
+#include "tasks/task_gps.h"
+#include "tasks/task_compass.h"
+#include "tasks/task_sdlog.h"
+#include "tasks/task_debug.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
+I2C_HandleTypeDef hi2c1;
+
+SPI_HandleTypeDef hspi1;
+DMA_HandleTypeDef hdma_spi1_rx;
+DMA_HandleTypeDef hdma_spi1_tx;
+
+TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
+UART_HandleTypeDef huart6;
+DMA_HandleTypeDef hdma_usart2_tx;
+DMA_HandleTypeDef hdma_usart3_rx;
+DMA_HandleTypeDef hdma_usart3_tx;
+DMA_HandleTypeDef hdma_usart6_rx;
+
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* USER CODE BEGIN PV */
+
+/* ── FreeRTOS IPC objects ── */
+QueueHandle_t     xNavQueue    = NULL;
+QueueHandle_t     xSensorQueue = NULL;
+SemaphoreHandle_t xI2CMutex    = NULL;
+SemaphoreHandle_t xSDMutex     = NULL;
+SemaphoreHandle_t xUART2Mutex  = NULL;
+
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_USART6_UART_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM2_Init(void);
+void StartDefaultTask(void *argument);
+
+/* USER CODE BEGIN PFP */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
+  MX_USART6_UART_Init();
+  MX_SPI1_Init();
+  MX_ADC1_Init();
+  {
+      __HAL_RCC_GPIOB_CLK_ENABLE();
+      GPIO_InitTypeDef g = {0};
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7 | GPIO_PIN_8, GPIO_PIN_SET);
+      g.Pin   = GPIO_PIN_7 | GPIO_PIN_8;
+      g.Mode  = GPIO_MODE_OUTPUT_OD;
+      g.Pull  = GPIO_NOPULL;
+      g.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOB, &g);
+      for (int i = 0; i < 9; i++) {
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+          HAL_Delay(1);
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+          HAL_Delay(1);
+      }
+      /* STOP condition */
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+      HAL_Delay(1);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+      HAL_Delay(1);
+      /* HAL_I2C_MspInit will reconfigure PB7/PB8 as AF4 below */
+  }
+  /* USER CODE END I2C_PreInit */
+  MX_I2C1_Init();
+  MX_TIM1_Init();
+  MX_FATFS_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+
+  /* Enable DWT cycle counter — required for DHT11 µs timing */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT       = 0;
+  DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;
+
+  /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  xI2CMutex   = xSemaphoreCreateMutex();
+  xSDMutex    = xSemaphoreCreateMutex();
+  xUART2Mutex = xSemaphoreCreateMutex();
+
+  configASSERT(xI2CMutex   != NULL);
+  configASSERT(xSDMutex    != NULL);
+  configASSERT(xUART2Mutex != NULL);
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+
+  /*
+   * Navigation:
+   * Keep only the latest command.
+   * Prevents motor lag from queued stale FlySky/RPi commands.
+   */
+  xNavQueue = xQueueCreate(1, sizeof(NavCommand_t));
+
+  /*
+   * Sensors:
+   * Keep only the latest sensor snapshot.
+   * Older readings are not useful.
+   */
+  xSensorQueue = xQueueCreate(1, sizeof(SensorData_t));
+
+  configASSERT(xNavQueue    != NULL);
+  configASSERT(xSensorQueue != NULL);
+
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /*
+   * Task priorities (higher number = higher priority):
+   *   FlySky   7  — manual RC control, highest
+   *   Motor    6  — consumes NavQueue
+   *   RPiUART  5  — autonomous navigation (RPi not connected yet)
+   *   GPS      4  — NMEA parsing
+   *   Compass  4  — I2C polling
+   *   Sensors  3  — ADC + DHT11 sampling
+   *   SDLog    2  — FatFS write
+   *   Debug    1  — UART printf, lowest
+   */
+  static FlySkyTaskArg_t flysky_arg = { .htim = &htim2, .channel = TIM_CHANNEL_1 };
+  xTaskCreate(FlySkyTask,   "FlySky",   512, &flysky_arg, 7, NULL);
+  xTaskCreate(MotorTask,    "Motor",    512, NULL,    6, NULL);
+  xTaskCreate(RpiUARTTask,  "RPiUART",  512, &huart3, 5, NULL);
+  xTaskCreate(GPSTask,      "GPS",      512, &huart6, 4, NULL);
+  xTaskCreate(CompassTask,  "Compass",  512, NULL,    4, NULL);
+  xTaskCreate(SensorTask,   "Sensors",  768, NULL,    3, NULL);
+  xTaskCreate(SDLogTask,    "SDLog",    768, NULL,    2, NULL);
+  xTaskCreate(DebugTask,    "Debug",    512, NULL,    1, NULL);
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 180;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Activate the Over-Drive mode
+  */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 4;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 179;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 999;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 89;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART6_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART6_Init 0 */
+
+  /* USER CODE END USART6_Init 0 */
+
+  /* USER CODE BEGIN USART6_Init 1 */
+
+  /* USER CODE END USART6_Init 1 */
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 9600;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART6_Init 2 */
+
+  /* USER CODE END USART6_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 7, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+  /* DMA1_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 7, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 10, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 8, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+  /* DMA2_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
+  /* DMA2_Stream4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn);
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin : DHT_PIN_Pin */
+  GPIO_InitStruct.Pin = DHT_PIN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(DHT_PIN_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : SD_CS_Pin */
+  GPIO_InitStruct.Pin = SD_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+/* ── FreeRTOS stack overflow hook ────────────────────────────────────── */
+
+
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  vTaskDelete(NULL);
+  /* USER CODE END 5 */
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  __disable_irq();
+  while (1) {}
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  (void)file; (void)line;
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
+
+```
+
+### FILE: ./Src/stm32f4xx_hal_msp.c
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file         stm32f4xx_hal_msp.c
+  * @brief        This file provides code for the MSP Initialization
+  *               and de-Initialization codes.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+extern DMA_HandleTypeDef hdma_adc1;
+
+extern DMA_HandleTypeDef hdma_spi1_rx;
+
+extern DMA_HandleTypeDef hdma_spi1_tx;
+
+extern DMA_HandleTypeDef hdma_usart2_tx;
+
+extern DMA_HandleTypeDef hdma_usart3_rx;
+
+extern DMA_HandleTypeDef hdma_usart3_tx;
+
+extern DMA_HandleTypeDef hdma_usart6_rx;
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN TD */
+
+/* USER CODE END TD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN Define */
+
+/* USER CODE END Define */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN Macro */
+
+/* USER CODE END Macro */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* External functions --------------------------------------------------------*/
+/* USER CODE BEGIN ExternalFunctions */
+
+/* USER CODE END ExternalFunctions */
+
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+                    /**
+  * Initializes the Global MSP.
+  */
+void HAL_MspInit(void)
+{
+
+  /* USER CODE BEGIN MspInit 0 */
+
+  /* USER CODE END MspInit 0 */
+
+  __HAL_RCC_SYSCFG_CLK_ENABLE();
+  __HAL_RCC_PWR_CLK_ENABLE();
+
+  /* System interrupt init*/
+  /* PendSV_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(PendSV_IRQn, 15, 0);
+
+  /* USER CODE BEGIN MspInit 1 */
+
+  /* USER CODE END MspInit 1 */
+}
+
+/**
+  * @brief ADC MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param hadc: ADC handle pointer
+  * @retval None
+  */
+void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(hadc->Instance==ADC1)
+  {
+    /* USER CODE BEGIN ADC1_MspInit 0 */
+
+    /* USER CODE END ADC1_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_ADC1_CLK_ENABLE();
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    /**ADC1 GPIO Configuration
+    PC1     ------> ADC1_IN11
+    PC2     ------> ADC1_IN12
+    PC3     ------> ADC1_IN13
+    PC4     ------> ADC1_IN14
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    /* ADC1 DMA Init */
+    /* ADC1 Init */
+    hdma_adc1.Instance = DMA2_Stream4;
+    hdma_adc1.Init.Channel = DMA_CHANNEL_0;
+    hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    hdma_adc1.Init.Mode = DMA_CIRCULAR;
+    hdma_adc1.Init.Priority = DMA_PRIORITY_MEDIUM;
+    hdma_adc1.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(hadc,DMA_Handle,hdma_adc1);
+
+    /* ADC1 interrupt Init */
+    HAL_NVIC_SetPriority(ADC_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(ADC_IRQn);
+    /* USER CODE BEGIN ADC1_MspInit 1 */
+
+    /* USER CODE END ADC1_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief ADC MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param hadc: ADC handle pointer
+  * @retval None
+  */
+void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
+{
+  if(hadc->Instance==ADC1)
+  {
+    /* USER CODE BEGIN ADC1_MspDeInit 0 */
+
+    /* USER CODE END ADC1_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_ADC1_CLK_DISABLE();
+
+    /**ADC1 GPIO Configuration
+    PC1     ------> ADC1_IN11
+    PC2     ------> ADC1_IN12
+    PC3     ------> ADC1_IN13
+    PC4     ------> ADC1_IN14
+    */
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4);
+
+    /* ADC1 DMA DeInit */
+    HAL_DMA_DeInit(hadc->DMA_Handle);
+
+    /* ADC1 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(ADC_IRQn);
+    /* USER CODE BEGIN ADC1_MspDeInit 1 */
+
+    /* USER CODE END ADC1_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief I2C MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param hi2c: I2C handle pointer
+  * @retval None
+  */
+void HAL_I2C_MspInit(I2C_HandleTypeDef* hi2c)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(hi2c->Instance==I2C1)
+  {
+    /* USER CODE BEGIN I2C1_MspInit 0 */
+
+    /* USER CODE END I2C1_MspInit 0 */
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /**I2C1 GPIO Configuration
+    PB7     ------> I2C1_SDA
+    PB8     ------> I2C1_SCL
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_8;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* Peripheral clock enable */
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    /* I2C1 interrupt Init */
+    HAL_NVIC_SetPriority(I2C1_EV_IRQn, 9, 0);
+    HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+    HAL_NVIC_SetPriority(I2C1_ER_IRQn, 9, 0);
+    HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+    /* USER CODE BEGIN I2C1_MspInit 1 */
+
+    /* USER CODE END I2C1_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief I2C MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param hi2c: I2C handle pointer
+  * @retval None
+  */
+void HAL_I2C_MspDeInit(I2C_HandleTypeDef* hi2c)
+{
+  if(hi2c->Instance==I2C1)
+  {
+    /* USER CODE BEGIN I2C1_MspDeInit 0 */
+
+    /* USER CODE END I2C1_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_I2C1_CLK_DISABLE();
+
+    /**I2C1 GPIO Configuration
+    PB7     ------> I2C1_SDA
+    PB8     ------> I2C1_SCL
+    */
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_7);
+
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_8);
+
+    /* I2C1 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
+    HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
+    /* USER CODE BEGIN I2C1_MspDeInit 1 */
+
+    /* USER CODE END I2C1_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief SPI MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param hspi: SPI handle pointer
+  * @retval None
+  */
+void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(hspi->Instance==SPI1)
+  {
+    /* USER CODE BEGIN SPI1_MspInit 0 */
+
+    /* USER CODE END SPI1_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_SPI1_CLK_ENABLE();
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**SPI1 GPIO Configuration
+    PA5     ------> SPI1_SCK
+    PA6     ------> SPI1_MISO
+    PA7     ------> SPI1_MOSI
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* SPI1 DMA Init */
+    /* SPI1_RX Init */
+    hdma_spi1_rx.Instance = DMA2_Stream0;
+    hdma_spi1_rx.Init.Channel = DMA_CHANNEL_3;
+    hdma_spi1_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_spi1_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_spi1_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_spi1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi1_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_spi1_rx.Init.Mode = DMA_NORMAL;
+    hdma_spi1_rx.Init.Priority = DMA_PRIORITY_MEDIUM;
+    hdma_spi1_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_spi1_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(hspi,hdmarx,hdma_spi1_rx);
+
+    /* SPI1_TX Init */
+    hdma_spi1_tx.Instance = DMA2_Stream3;
+    hdma_spi1_tx.Init.Channel = DMA_CHANNEL_3;
+    hdma_spi1_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_spi1_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_spi1_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_spi1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.Mode = DMA_NORMAL;
+    hdma_spi1_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
+    hdma_spi1_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_spi1_tx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(hspi,hdmatx,hdma_spi1_tx);
+
+    /* SPI1 interrupt Init */
+    HAL_NVIC_SetPriority(SPI1_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(SPI1_IRQn);
+    /* USER CODE BEGIN SPI1_MspInit 1 */
+
+    /* USER CODE END SPI1_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief SPI MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param hspi: SPI handle pointer
+  * @retval None
+  */
+void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
+{
+  if(hspi->Instance==SPI1)
+  {
+    /* USER CODE BEGIN SPI1_MspDeInit 0 */
+
+    /* USER CODE END SPI1_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_SPI1_CLK_DISABLE();
+
+    /**SPI1 GPIO Configuration
+    PA5     ------> SPI1_SCK
+    PA6     ------> SPI1_MISO
+    PA7     ------> SPI1_MOSI
+    */
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
+
+    /* SPI1 DMA DeInit */
+    HAL_DMA_DeInit(hspi->hdmarx);
+    HAL_DMA_DeInit(hspi->hdmatx);
+
+    /* SPI1 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(SPI1_IRQn);
+    /* USER CODE BEGIN SPI1_MspDeInit 1 */
+
+    /* USER CODE END SPI1_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief TIM_PWM MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param htim_pwm: TIM_PWM handle pointer
+  * @retval None
+  */
+void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef* htim_pwm)
+{
+  if(htim_pwm->Instance==TIM1)
+  {
+    /* USER CODE BEGIN TIM1_MspInit 0 */
+
+    /* USER CODE END TIM1_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_TIM1_CLK_ENABLE();
+    /* USER CODE BEGIN TIM1_MspInit 1 */
+
+    /* USER CODE END TIM1_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief TIM_IC MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param htim_ic: TIM_IC handle pointer
+  * @retval None
+  */
+void HAL_TIM_IC_MspInit(TIM_HandleTypeDef* htim_ic)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(htim_ic->Instance==TIM2)
+  {
+    /* USER CODE BEGIN TIM2_MspInit 0 */
+
+    /* USER CODE END TIM2_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_TIM2_CLK_ENABLE();
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**TIM2 GPIO Configuration
+    PA0-WKUP     ------> TIM2_CH1
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_0;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* TIM2 interrupt Init */
+    HAL_NVIC_SetPriority(TIM2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(TIM2_IRQn);
+    /* USER CODE BEGIN TIM2_MspInit 1 */
+
+    /* USER CODE END TIM2_MspInit 1 */
+
+  }
+
+}
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(htim->Instance==TIM1)
+  {
+    /* USER CODE BEGIN TIM1_MspPostInit 0 */
+
+    /* USER CODE END TIM1_MspPostInit 0 */
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**TIM1 GPIO Configuration
+    PA8     ------> TIM1_CH1
+    PA9     ------> TIM1_CH2
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* USER CODE BEGIN TIM1_MspPostInit 1 */
+
+    /* USER CODE END TIM1_MspPostInit 1 */
+  }
+
+}
+/**
+  * @brief TIM_PWM MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param htim_pwm: TIM_PWM handle pointer
+  * @retval None
+  */
+void HAL_TIM_PWM_MspDeInit(TIM_HandleTypeDef* htim_pwm)
+{
+  if(htim_pwm->Instance==TIM1)
+  {
+    /* USER CODE BEGIN TIM1_MspDeInit 0 */
+
+    /* USER CODE END TIM1_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_TIM1_CLK_DISABLE();
+    /* USER CODE BEGIN TIM1_MspDeInit 1 */
+
+    /* USER CODE END TIM1_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief TIM_IC MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param htim_ic: TIM_IC handle pointer
+  * @retval None
+  */
+void HAL_TIM_IC_MspDeInit(TIM_HandleTypeDef* htim_ic)
+{
+  if(htim_ic->Instance==TIM2)
+  {
+    /* USER CODE BEGIN TIM2_MspDeInit 0 */
+
+    /* USER CODE END TIM2_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_TIM2_CLK_DISABLE();
+
+    /**TIM2 GPIO Configuration
+    PA0-WKUP     ------> TIM2_CH1
+    */
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_0);
+
+    /* TIM2 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(TIM2_IRQn);
+    /* USER CODE BEGIN TIM2_MspDeInit 1 */
+
+    /* USER CODE END TIM2_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief UART MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspInit(UART_HandleTypeDef* huart)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(huart->Instance==USART2)
+  {
+    /* USER CODE BEGIN USART2_MspInit 0 */
+
+    /* USER CODE END USART2_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_USART2_CLK_ENABLE();
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**USART2 GPIO Configuration
+    PA2     ------> USART2_TX
+    PA3     ------> USART2_RX
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* USART2 DMA Init */
+    /* USART2_TX Init */
+    hdma_usart2_tx.Instance = DMA1_Stream6;
+    hdma_usart2_tx.Init.Channel = DMA_CHANNEL_4;
+    hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_usart2_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart2_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart2_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart2_tx.Init.Mode = DMA_NORMAL;
+    hdma_usart2_tx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_usart2_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_usart2_tx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(huart,hdmatx,hdma_usart2_tx);
+
+    /* USART2 interrupt Init */
+    HAL_NVIC_SetPriority(USART2_IRQn, 10, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    /* USER CODE BEGIN USART2_MspInit 1 */
+
+    /* USER CODE END USART2_MspInit 1 */
+  }
+  else if(huart->Instance==USART3)
+  {
+    /* USER CODE BEGIN USART3_MspInit 0 */
+
+    /* USER CODE END USART3_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_USART3_CLK_ENABLE();
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /**USART3 GPIO Configuration
+    PC5     ------> USART3_RX
+    PB10     ------> USART3_TX
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_5;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* USART3 DMA Init */
+    /* USART3_RX Init */
+    hdma_usart3_rx.Instance = DMA1_Stream1;
+    hdma_usart3_rx.Init.Channel = DMA_CHANNEL_4;
+    hdma_usart3_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart3_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart3_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart3_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart3_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart3_rx.Init.Mode = DMA_CIRCULAR;
+    hdma_usart3_rx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_usart3_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_usart3_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(huart,hdmarx,hdma_usart3_rx);
+
+    /* USART3_TX Init */
+    hdma_usart3_tx.Instance = DMA1_Stream3;
+    hdma_usart3_tx.Init.Channel = DMA_CHANNEL_4;
+    hdma_usart3_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_usart3_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart3_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart3_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart3_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart3_tx.Init.Mode = DMA_NORMAL;
+    hdma_usart3_tx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_usart3_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_usart3_tx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(huart,hdmatx,hdma_usart3_tx);
+
+    /* USART3 interrupt Init */
+    HAL_NVIC_SetPriority(USART3_IRQn, 7, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
+    /* USER CODE BEGIN USART3_MspInit 1 */
+
+    /* USER CODE END USART3_MspInit 1 */
+  }
+  else if(huart->Instance==USART6)
+  {
+    /* USER CODE BEGIN USART6_MspInit 0 */
+
+    /* USER CODE END USART6_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_USART6_CLK_ENABLE();
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    /**USART6 GPIO Configuration
+    PC6     ------> USART6_TX
+    PC7     ------> USART6_RX
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    /* USART6 DMA Init */
+    /* USART6_RX Init */
+    hdma_usart6_rx.Instance = DMA2_Stream1;
+    hdma_usart6_rx.Init.Channel = DMA_CHANNEL_5;
+    hdma_usart6_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart6_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart6_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart6_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart6_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart6_rx.Init.Mode = DMA_CIRCULAR;
+    hdma_usart6_rx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_usart6_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_usart6_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(huart,hdmarx,hdma_usart6_rx);
+
+    /* USART6 interrupt Init */
+    HAL_NVIC_SetPriority(USART6_IRQn, 8, 0);
+    HAL_NVIC_EnableIRQ(USART6_IRQn);
+    /* USER CODE BEGIN USART6_MspInit 1 */
+
+    /* USER CODE END USART6_MspInit 1 */
+  }
+
+}
+
+/**
+  * @brief UART MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
+{
+  if(huart->Instance==USART2)
+  {
+    /* USER CODE BEGIN USART2_MspDeInit 0 */
+
+    /* USER CODE END USART2_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_USART2_CLK_DISABLE();
+
+    /**USART2 GPIO Configuration
+    PA2     ------> USART2_TX
+    PA3     ------> USART2_RX
+    */
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2|GPIO_PIN_3);
+
+    /* USART2 DMA DeInit */
+    HAL_DMA_DeInit(huart->hdmatx);
+
+    /* USART2 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(USART2_IRQn);
+    /* USER CODE BEGIN USART2_MspDeInit 1 */
+
+    /* USER CODE END USART2_MspDeInit 1 */
+  }
+  else if(huart->Instance==USART3)
+  {
+    /* USER CODE BEGIN USART3_MspDeInit 0 */
+
+    /* USER CODE END USART3_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_USART3_CLK_DISABLE();
+
+    /**USART3 GPIO Configuration
+    PC5     ------> USART3_RX
+    PB10     ------> USART3_TX
+    */
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_5);
+
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_10);
+
+    /* USART3 DMA DeInit */
+    HAL_DMA_DeInit(huart->hdmarx);
+    HAL_DMA_DeInit(huart->hdmatx);
+
+    /* USART3 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(USART3_IRQn);
+    /* USER CODE BEGIN USART3_MspDeInit 1 */
+
+    /* USER CODE END USART3_MspDeInit 1 */
+  }
+  else if(huart->Instance==USART6)
+  {
+    /* USER CODE BEGIN USART6_MspDeInit 0 */
+
+    /* USER CODE END USART6_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_USART6_CLK_DISABLE();
+
+    /**USART6 GPIO Configuration
+    PC6     ------> USART6_TX
+    PC7     ------> USART6_RX
+    */
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6|GPIO_PIN_7);
+
+    /* USART6 DMA DeInit */
+    HAL_DMA_DeInit(huart->hdmarx);
+
+    /* USART6 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(USART6_IRQn);
+    /* USER CODE BEGIN USART6_MspDeInit 1 */
+
+    /* USER CODE END USART6_MspDeInit 1 */
+  }
+
+}
+
+/* USER CODE BEGIN 1 */
+
+/* USER CODE END 1 */
+
+```
+
+### FILE: ./Src/stm32f4xx_it.c
+```c
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    stm32f4xx_it.c
+  * @brief   Interrupt Service Routines.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "stm32f4xx_it.h"
+#include "FreeRTOS.h"
+#include "task.h"
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN TD */
+
+/* USER CODE END TD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/* External variables --------------------------------------------------------*/
+extern DMA_HandleTypeDef hdma_adc1;
+extern ADC_HandleTypeDef hadc1;
+extern I2C_HandleTypeDef hi2c1;
+extern DMA_HandleTypeDef hdma_spi1_rx;
+extern DMA_HandleTypeDef hdma_spi1_tx;
+extern SPI_HandleTypeDef hspi1;
+extern TIM_HandleTypeDef htim2;
+extern DMA_HandleTypeDef hdma_usart2_tx;
+extern DMA_HandleTypeDef hdma_usart3_rx;
+extern DMA_HandleTypeDef hdma_usart3_tx;
+extern DMA_HandleTypeDef hdma_usart6_rx;
+extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart3;
+extern UART_HandleTypeDef huart6;
+/* USER CODE BEGIN EV */
+
+/* USER CODE END EV */
+
+/******************************************************************************/
+/*           Cortex-M4 Processor Interruption and Exception Handlers          */
+/******************************************************************************/
+/**
+  * @brief This function handles Non maskable interrupt.
+  */
+void NMI_Handler(void)
+{
+  /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+
+  /* USER CODE END NonMaskableInt_IRQn 0 */
+  /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
+   while (1)
+  {
+  }
+  /* USER CODE END NonMaskableInt_IRQn 1 */
+}
+
+/**
+  * @brief This function handles Hard fault interrupt.
+  */
+void HardFault_Handler(void)
+{
+  /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  /* USER CODE END HardFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    /* USER CODE END W1_HardFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Memory management fault.
+  */
+void MemManage_Handler(void)
+{
+  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+
+  /* USER CODE END MemoryManagement_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
+    /* USER CODE END W1_MemoryManagement_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Pre-fetch fault, memory access fault.
+  */
+void BusFault_Handler(void)
+{
+  /* USER CODE BEGIN BusFault_IRQn 0 */
+
+  /* USER CODE END BusFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
+    /* USER CODE END W1_BusFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Undefined instruction or illegal state.
+  */
+void UsageFault_Handler(void)
+{
+  /* USER CODE BEGIN UsageFault_IRQn 0 */
+
+  /* USER CODE END UsageFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
+    /* USER CODE END W1_UsageFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Debug monitor.
+  */
+void DebugMon_Handler(void)
+{
+  /* USER CODE BEGIN DebugMonitor_IRQn 0 */
+
+  /* USER CODE END DebugMonitor_IRQn 0 */
+  /* USER CODE BEGIN DebugMonitor_IRQn 1 */
+
+  /* USER CODE END DebugMonitor_IRQn 1 */
+}
+
+/**
+  * @brief This function handles System tick timer.
+  */
+void SysTick_Handler(void)
+{
+  /* USER CODE BEGIN SysTick_IRQn 0 */
+
+  /* USER CODE END SysTick_IRQn 0 */
+  HAL_IncTick();
+#if (INCLUDE_xTaskGetSchedulerState == 1 )
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
+  {
+#endif /* INCLUDE_xTaskGetSchedulerState */
+  xPortSysTickHandler();
+#if (INCLUDE_xTaskGetSchedulerState == 1 )
+  }
+#endif /* INCLUDE_xTaskGetSchedulerState */
+  /* USER CODE BEGIN SysTick_IRQn 1 */
+
+  /* USER CODE END SysTick_IRQn 1 */
+}
+
+/******************************************************************************/
+/* STM32F4xx Peripheral Interrupt Handlers                                    */
+/* Add here the Interrupt Handlers for the used peripherals.                  */
+/* For the available peripheral interrupt handler names,                      */
+/* please refer to the startup file (startup_stm32f4xx.s).                    */
+/******************************************************************************/
+
+/**
+  * @brief This function handles DMA1 stream1 global interrupt.
+  */
+void DMA1_Stream1_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Stream1_IRQn 0 */
+
+  /* USER CODE END DMA1_Stream1_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_rx);
+  /* USER CODE BEGIN DMA1_Stream1_IRQn 1 */
+
+  /* USER CODE END DMA1_Stream1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 stream3 global interrupt.
+  */
+void DMA1_Stream3_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Stream3_IRQn 0 */
+
+  /* USER CODE END DMA1_Stream3_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_tx);
+  /* USER CODE BEGIN DMA1_Stream3_IRQn 1 */
+
+  /* USER CODE END DMA1_Stream3_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 stream6 global interrupt.
+  */
+void DMA1_Stream6_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Stream6_IRQn 0 */
+
+  /* USER CODE END DMA1_Stream6_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart2_tx);
+  /* USER CODE BEGIN DMA1_Stream6_IRQn 1 */
+
+  /* USER CODE END DMA1_Stream6_IRQn 1 */
+}
+
+/**
+  * @brief This function handles ADC1, ADC2 and ADC3 interrupts.
+  */
+void ADC_IRQHandler(void)
+{
+  /* USER CODE BEGIN ADC_IRQn 0 */
+
+  /* USER CODE END ADC_IRQn 0 */
+  HAL_ADC_IRQHandler(&hadc1);
+  /* USER CODE BEGIN ADC_IRQn 1 */
+
+  /* USER CODE END ADC_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM2 global interrupt.
+  */
+void TIM2_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM2_IRQn 0 */
+
+  /* USER CODE END TIM2_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim2);
+  /* USER CODE BEGIN TIM2_IRQn 1 */
+
+  /* USER CODE END TIM2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C1 event interrupt.
+  */
+void I2C1_EV_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C1_EV_IRQn 0 */
+
+  /* USER CODE END I2C1_EV_IRQn 0 */
+  HAL_I2C_EV_IRQHandler(&hi2c1);
+  /* USER CODE BEGIN I2C1_EV_IRQn 1 */
+
+  /* USER CODE END I2C1_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C1 error interrupt.
+  */
+void I2C1_ER_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C1_ER_IRQn 0 */
+
+  /* USER CODE END I2C1_ER_IRQn 0 */
+  HAL_I2C_ER_IRQHandler(&hi2c1);
+  /* USER CODE BEGIN I2C1_ER_IRQn 1 */
+
+  /* USER CODE END I2C1_ER_IRQn 1 */
+}
+
+/**
+  * @brief This function handles SPI1 global interrupt.
+  */
+void SPI1_IRQHandler(void)
+{
+  /* USER CODE BEGIN SPI1_IRQn 0 */
+
+  /* USER CODE END SPI1_IRQn 0 */
+  HAL_SPI_IRQHandler(&hspi1);
+  /* USER CODE BEGIN SPI1_IRQn 1 */
+
+  /* USER CODE END SPI1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART2 global interrupt.
+  */
+void USART2_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART2_IRQn 0 */
+
+  /* USER CODE END USART2_IRQn 0 */
+  HAL_UART_IRQHandler(&huart2);
+  /* USER CODE BEGIN USART2_IRQn 1 */
+
+  /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART3 global interrupt.
+  */
+void USART3_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART3_IRQn 0 */
+
+  /* USER CODE END USART3_IRQn 0 */
+  HAL_UART_IRQHandler(&huart3);
+  /* USER CODE BEGIN USART3_IRQn 1 */
+
+  /* USER CODE END USART3_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream0 global interrupt.
+  */
+void DMA2_Stream0_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream0_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream0_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_spi1_rx);
+  /* USER CODE BEGIN DMA2_Stream0_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream0_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream1 global interrupt.
+  */
+void DMA2_Stream1_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream1_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream1_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart6_rx);
+  /* USER CODE BEGIN DMA2_Stream1_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream3 global interrupt.
+  */
+void DMA2_Stream3_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_spi1_tx);
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream4 global interrupt.
+  */
+void DMA2_Stream4_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream4_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream4_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_adc1);
+  /* USER CODE BEGIN DMA2_Stream4_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream4_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART6 global interrupt.
+  */
+void USART6_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART6_IRQn 0 */
+
+  /* USER CODE END USART6_IRQn 0 */
+  HAL_UART_IRQHandler(&huart6);
+  /* USER CODE BEGIN USART6_IRQn 1 */
+
+  /* USER CODE END USART6_IRQn 1 */
+}
+
+/* USER CODE BEGIN 1 */
+
+/* USER CODE END 1 */
+
+```
+
+### FILE: ./Src/syscalls.c
+```c
+/**
+ ******************************************************************************
+ * @file      syscalls.c
+ * @author    Auto-generated by STM32CubeIDE
+ * @brief     STM32CubeIDE Minimal System calls file
+ *
+ *            For more information about which c-functions
+ *            need which of these lowlevel functions
+ *            please consult the Newlib libc-manual
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2020-2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
+
+/* Includes */
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <stdio.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/times.h>
+
+
+/* Variables */
+extern int __io_putchar(int ch) __attribute__((weak));
+extern int __io_getchar(void) __attribute__((weak));
+
+
+char *__env[1] = { 0 };
+char **environ = __env;
+
+
+/* Functions */
+void initialise_monitor_handles()
+{
+}
+
+int _getpid(void)
+{
+  return 1;
+}
+
+int _kill(int pid, int sig)
+{
+  (void)pid;
+  (void)sig;
+  errno = EINVAL;
+  return -1;
+}
+
+void _exit (int status)
+{
+  _kill(status, -1);
+  while (1) {}    /* Make sure we hang here */
+}
+
+__attribute__((weak)) int _read(int file, char *ptr, int len)
+{
+  (void)file;
+  int DataIdx;
+
+  for (DataIdx = 0; DataIdx < len; DataIdx++)
+  {
+    *ptr++ = __io_getchar();
+  }
+
+  return len;
+}
+
+__attribute__((weak)) int _write(int file, char *ptr, int len)
+{
+  (void)file;
+  int DataIdx;
+
+  for (DataIdx = 0; DataIdx < len; DataIdx++)
+  {
+    __io_putchar(*ptr++);
+  }
+  return len;
+}
+
+int _close(int file)
+{
+  (void)file;
+  return -1;
+}
+
+
+int _fstat(int file, struct stat *st)
+{
+  (void)file;
+  st->st_mode = S_IFCHR;
+  return 0;
+}
+
+int _isatty(int file)
+{
+  (void)file;
+  return 1;
+}
+
+int _lseek(int file, int ptr, int dir)
+{
+  (void)file;
+  (void)ptr;
+  (void)dir;
+  return 0;
+}
+
+int _open(char *path, int flags, ...)
+{
+  (void)path;
+  (void)flags;
+  /* Pretend like we always fail */
+  return -1;
+}
+
+int _wait(int *status)
+{
+  (void)status;
+  errno = ECHILD;
+  return -1;
+}
+
+int _unlink(char *name)
+{
+  (void)name;
+  errno = ENOENT;
+  return -1;
+}
+
+int _times(struct tms *buf)
+{
+  (void)buf;
+  return -1;
+}
+
+int _stat(char *file, struct stat *st)
+{
+  (void)file;
+  st->st_mode = S_IFCHR;
+  return 0;
+}
+
+int _link(char *old, char *new)
+{
+  (void)old;
+  (void)new;
+  errno = EMLINK;
+  return -1;
+}
+
+int _fork(void)
+{
+  errno = EAGAIN;
+  return -1;
+}
+
+int _execve(char *name, char **argv, char **env)
+{
+  (void)name;
+  (void)argv;
+  (void)env;
+  errno = ENOMEM;
+  return -1;
+}
+
+```
+
+### FILE: ./Src/sysmem.c
+```c
+/**
+ ******************************************************************************
+ * @file      sysmem.c
+ * @author    Generated by STM32CubeIDE
+ * @brief     STM32CubeIDE System Memory calls file
+ *
+ *            For more information about which C functions
+ *            need which of these lowlevel functions
+ *            please consult the newlib libc manual
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
+
+/* Includes */
+#include <errno.h>
+#include <stdint.h>
+
+/**
+ * Pointer to the current high watermark of the heap usage
+ */
+static uint8_t *__sbrk_heap_end = NULL;
+
+/**
+ * @brief _sbrk() allocates memory to the newlib heap and is used by malloc
+ *        and others from the C library
+ *
+ * @verbatim
+ * ############################################################################
+ * #  .data  #  .bss  #       newlib heap       #          MSP stack          #
+ * #         #        #                         # Reserved by _Min_Stack_Size #
+ * ############################################################################
+ * ^-- RAM start      ^-- _end                             _estack, RAM end --^
+ * @endverbatim
+ *
+ * This implementation starts allocating at the '_end' linker symbol
+ * The '_Min_Stack_Size' linker symbol reserves a memory for the MSP stack
+ * The implementation considers '_estack' linker symbol to be RAM end
+ * NOTE: If the MSP stack, at any point during execution, grows larger than the
+ * reserved size, please increase the '_Min_Stack_Size'.
+ *
+ * @param incr Memory size
+ * @return Pointer to allocated memory
+ */
+void *_sbrk(ptrdiff_t incr)
+{
+  extern uint8_t _end; /* Symbol defined in the linker script */
+  extern uint8_t _estack; /* Symbol defined in the linker script */
+  extern uint32_t _Min_Stack_Size; /* Symbol defined in the linker script */
+  const uint32_t stack_limit = (uint32_t)&_estack - (uint32_t)&_Min_Stack_Size;
+  const uint8_t *max_heap = (uint8_t *)stack_limit;
+  uint8_t *prev_heap_end;
+
+  /* Initialize heap end at first call */
+  if (NULL == __sbrk_heap_end)
+  {
+    __sbrk_heap_end = &_end;
+  }
+
+  /* Protect heap from growing into the reserved MSP stack */
+  if (__sbrk_heap_end + incr > max_heap)
+  {
+    errno = ENOMEM;
+    return (void *)-1;
+  }
+
+  prev_heap_end = __sbrk_heap_end;
+  __sbrk_heap_end += incr;
+
+  return (void *)prev_heap_end;
+}
+
+```
+
+### FILE: ./Src/system_stm32f4xx.c
+```c
+/**
+  ******************************************************************************
+  * @file    system_stm32f4xx.c
+  * @author  MCD Application Team
+  * @brief   CMSIS Cortex-M4 Device Peripheral Access Layer System Source File.
+  *
+  *   This file provides two functions and one global variable to be called from 
+  *   user application:
+  *      - SystemInit(): This function is called at startup just after reset and 
+  *                      before branch to main program. This call is made inside
+  *                      the "startup_stm32f4xx.s" file.
+  *
+  *      - SystemCoreClock variable: Contains the core clock (HCLK), it can be used
+  *                                  by the user application to setup the SysTick 
+  *                                  timer or configure other parameters.
+  *                                     
+  *      - SystemCoreClockUpdate(): Updates the variable SystemCoreClock and must
+  *                                 be called whenever the core clock is changed
+  *                                 during program execution.
+  *
+  *
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2017 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+
+/** @addtogroup CMSIS
+  * @{
+  */
+
+/** @addtogroup stm32f4xx_system
+  * @{
+  */  
+  
+/** @addtogroup STM32F4xx_System_Private_Includes
+  * @{
+  */
+
+
+#include "stm32f4xx.h"
+
+#if !defined  (HSE_VALUE) 
+  #define HSE_VALUE    ((uint32_t)25000000) /*!< Default value of the External oscillator in Hz */
+#endif /* HSE_VALUE */
+
+#if !defined  (HSI_VALUE)
+  #define HSI_VALUE    ((uint32_t)16000000) /*!< Value of the Internal oscillator in Hz*/
+#endif /* HSI_VALUE */
+
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_TypesDefinitions
+  * @{
+  */
+
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_Defines
+  * @{
+  */
+
+/************************* Miscellaneous Configuration ************************/
+/*!< Uncomment the following line if you need to use external SRAM or SDRAM as data memory  */
+#if defined(STM32F405xx) || defined(STM32F415xx) || defined(STM32F407xx) || defined(STM32F417xx)\
+ || defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F469xx) || defined(STM32F479xx) || defined(STM32F412Zx) || defined(STM32F412Vx)
+/* #define DATA_IN_ExtSRAM */
+#endif /* STM32F40xxx || STM32F41xxx || STM32F42xxx || STM32F43xxx || STM32F469xx || STM32F479xx ||\
+          STM32F412Zx || STM32F412Vx */
+ 
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F446xx) || defined(STM32F469xx) || defined(STM32F479xx)
+/* #define DATA_IN_ExtSDRAM */
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx || STM32F446xx || STM32F469xx ||\
+          STM32F479xx */
+
+/* Note: Following vector table addresses must be defined in line with linker
+         configuration. */
+/*!< Uncomment the following line if you need to relocate the vector table
+     anywhere in Flash or Sram, else the vector table is kept at the automatic
+     remap of boot address selected */
+/* #define USER_VECT_TAB_ADDRESS */
+
+#if defined(USER_VECT_TAB_ADDRESS)
+/*!< Uncomment the following line if you need to relocate your vector Table
+     in Sram else user remap will be done in Flash. */
+/* #define VECT_TAB_SRAM */
+#if defined(VECT_TAB_SRAM)
+#define VECT_TAB_BASE_ADDRESS   SRAM_BASE       /*!< Vector Table base address field.
+                                                     This value must be a multiple of 0x200. */
+#else
+#define VECT_TAB_BASE_ADDRESS   FLASH_BASE      /*!< Vector Table base address field.
+                                                     This value must be a multiple of 0x200. */
+#endif /* VECT_TAB_SRAM */
+#if !defined(VECT_TAB_OFFSET)
+#define VECT_TAB_OFFSET         0x00000000U     /*!< Vector Table offset field.
+                                                     This value must be a multiple of 0x200. */
+#endif /* VECT_TAB_OFFSET */
+#endif /* USER_VECT_TAB_ADDRESS */
+/******************************************************************************/
+
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_Macros
+  * @{
+  */
+
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_Variables
+  * @{
+  */
+  /* This variable is updated in three ways:
+      1) by calling CMSIS function SystemCoreClockUpdate()
+      2) by calling HAL API function HAL_RCC_GetHCLKFreq()
+      3) each time HAL_RCC_ClockConfig() is called to configure the system clock frequency 
+         Note: If you use this function to configure the system clock; then there
+               is no need to call the 2 first functions listed above, since SystemCoreClock
+               variable is updated automatically.
+  */
+uint32_t SystemCoreClock = 16000000;
+const uint8_t AHBPrescTable[16] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 6, 7, 8, 9};
+const uint8_t APBPrescTable[8]  = {0, 0, 0, 0, 1, 2, 3, 4};
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_FunctionPrototypes
+  * @{
+  */
+
+#if defined (DATA_IN_ExtSRAM) || defined (DATA_IN_ExtSDRAM)
+  static void SystemInit_ExtMemCtl(void); 
+#endif /* DATA_IN_ExtSRAM || DATA_IN_ExtSDRAM */
+
+/**
+  * @}
+  */
+
+/** @addtogroup STM32F4xx_System_Private_Functions
+  * @{
+  */
+
+/**
+  * @brief  Setup the microcontroller system
+  *         Initialize the FPU setting, vector table location and External memory 
+  *         configuration.
+  * @param  None
+  * @retval None
+  */
+void SystemInit(void)
+{
+  /* FPU settings ------------------------------------------------------------*/
+  #if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
+    SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));  /* set CP10 and CP11 Full Access */
+  #endif
+
+#if defined (DATA_IN_ExtSRAM) || defined (DATA_IN_ExtSDRAM)
+  SystemInit_ExtMemCtl(); 
+#endif /* DATA_IN_ExtSRAM || DATA_IN_ExtSDRAM */
+
+  /* Configure the Vector Table location -------------------------------------*/
+#if defined(USER_VECT_TAB_ADDRESS)
+  SCB->VTOR = VECT_TAB_BASE_ADDRESS | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM */
+#endif /* USER_VECT_TAB_ADDRESS */
+}
+
+/**
+   * @brief  Update SystemCoreClock variable according to Clock Register Values.
+  *         The SystemCoreClock variable contains the core clock (HCLK), it can
+  *         be used by the user application to setup the SysTick timer or configure
+  *         other parameters.
+  *           
+  * @note   Each time the core clock (HCLK) changes, this function must be called
+  *         to update SystemCoreClock variable value. Otherwise, any configuration
+  *         based on this variable will be incorrect.         
+  *     
+  * @note   - The system frequency computed by this function is not the real 
+  *           frequency in the chip. It is calculated based on the predefined 
+  *           constant and the selected clock source:
+  *             
+  *           - If SYSCLK source is HSI, SystemCoreClock will contain the HSI_VALUE(*)
+  *                                              
+  *           - If SYSCLK source is HSE, SystemCoreClock will contain the HSE_VALUE(**)
+  *                          
+  *           - If SYSCLK source is PLL, SystemCoreClock will contain the HSE_VALUE(**) 
+  *             or HSI_VALUE(*) multiplied/divided by the PLL factors.
+  *         
+  *         (*) HSI_VALUE is a constant defined in stm32f4xx_hal_conf.h file (default value
+  *             16 MHz) but the real value may vary depending on the variations
+  *             in voltage and temperature.   
+  *    
+  *         (**) HSE_VALUE is a constant defined in stm32f4xx_hal_conf.h file (its value
+  *              depends on the application requirements), user has to ensure that HSE_VALUE
+  *              is same as the real frequency of the crystal used. Otherwise, this function
+  *              may have wrong result.
+  *                
+  *         - The result of this function could be not correct when using fractional
+  *           value for HSE crystal.
+  *     
+  * @param  None
+  * @retval None
+  */
+void SystemCoreClockUpdate(void)
+{
+  uint32_t tmp, pllvco, pllp, pllsource, pllm;
+  
+  /* Get SYSCLK source -------------------------------------------------------*/
+  tmp = RCC->CFGR & RCC_CFGR_SWS;
+
+  switch (tmp)
+  {
+    case 0x00:  /* HSI used as system clock source */
+      SystemCoreClock = HSI_VALUE;
+      break;
+    case 0x04:  /* HSE used as system clock source */
+      SystemCoreClock = HSE_VALUE;
+      break;
+    case 0x08:  /* PLL used as system clock source */
+
+      /* PLL_VCO = (HSE_VALUE or HSI_VALUE / PLL_M) * PLL_N
+         SYSCLK = PLL_VCO / PLL_P
+         */    
+      pllsource = (RCC->PLLCFGR & RCC_PLLCFGR_PLLSRC) >> 22;
+      pllm = RCC->PLLCFGR & RCC_PLLCFGR_PLLM;
+      
+      if (pllsource != 0)
+      {
+        /* HSE used as PLL clock source */
+        pllvco = (HSE_VALUE / pllm) * ((RCC->PLLCFGR & RCC_PLLCFGR_PLLN) >> 6);
+      }
+      else
+      {
+        /* HSI used as PLL clock source */
+        pllvco = (HSI_VALUE / pllm) * ((RCC->PLLCFGR & RCC_PLLCFGR_PLLN) >> 6);
+      }
+
+      pllp = (((RCC->PLLCFGR & RCC_PLLCFGR_PLLP) >>16) + 1 ) *2;
+      SystemCoreClock = pllvco/pllp;
+      break;
+    default:
+      SystemCoreClock = HSI_VALUE;
+      break;
+  }
+  /* Compute HCLK frequency --------------------------------------------------*/
+  /* Get HCLK prescaler */
+  tmp = AHBPrescTable[((RCC->CFGR & RCC_CFGR_HPRE) >> 4)];
+  /* HCLK frequency */
+  SystemCoreClock >>= tmp;
+}
+
+#if defined (DATA_IN_ExtSRAM) && defined (DATA_IN_ExtSDRAM)
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F469xx) || defined(STM32F479xx)
+/**
+  * @brief  Setup the external memory controller.
+  *         Called in startup_stm32f4xx.s before jump to main.
+  *         This function configures the external memories (SRAM/SDRAM)
+  *         This SRAM/SDRAM will be used as program data memory (including heap and stack).
+  * @param  None
+  * @retval None
+  */
+void SystemInit_ExtMemCtl(void)
+{
+  __IO uint32_t tmp = 0x00;
+
+  register uint32_t tmpreg = 0, timeout = 0xFFFF;
+  register __IO uint32_t index;
+
+  /* Enable GPIOC, GPIOD, GPIOE, GPIOF, GPIOG, GPIOH and GPIOI interface clock */
+  RCC->AHB1ENR |= 0x000001F8;
+
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB1ENR, RCC_AHB1ENR_GPIOCEN);
+  
+  /* Connect PDx pins to FMC Alternate function */
+  GPIOD->AFR[0]  = 0x00CCC0CC;
+  GPIOD->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PDx pins in Alternate function mode */  
+  GPIOD->MODER   = 0xAAAA0A8A;
+  /* Configure PDx pins speed to 100 MHz */  
+  GPIOD->OSPEEDR = 0xFFFF0FCF;
+  /* Configure PDx pins Output type to push-pull */  
+  GPIOD->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PDx pins */ 
+  GPIOD->PUPDR   = 0x00000000;
+
+  /* Connect PEx pins to FMC Alternate function */
+  GPIOE->AFR[0]  = 0xC00CC0CC;
+  GPIOE->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PEx pins in Alternate function mode */ 
+  GPIOE->MODER   = 0xAAAA828A;
+  /* Configure PEx pins speed to 100 MHz */ 
+  GPIOE->OSPEEDR = 0xFFFFC3CF;
+  /* Configure PEx pins Output type to push-pull */  
+  GPIOE->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PEx pins */ 
+  GPIOE->PUPDR   = 0x00000000;
+  
+  /* Connect PFx pins to FMC Alternate function */
+  GPIOF->AFR[0]  = 0xCCCCCCCC;
+  GPIOF->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PFx pins in Alternate function mode */   
+  GPIOF->MODER   = 0xAA800AAA;
+  /* Configure PFx pins speed to 50 MHz */ 
+  GPIOF->OSPEEDR = 0xAA800AAA;
+  /* Configure PFx pins Output type to push-pull */  
+  GPIOF->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PFx pins */ 
+  GPIOF->PUPDR   = 0x00000000;
+
+  /* Connect PGx pins to FMC Alternate function */
+  GPIOG->AFR[0]  = 0xCCCCCCCC;
+  GPIOG->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PGx pins in Alternate function mode */ 
+  GPIOG->MODER   = 0xAAAAAAAA;
+  /* Configure PGx pins speed to 50 MHz */ 
+  GPIOG->OSPEEDR = 0xAAAAAAAA;
+  /* Configure PGx pins Output type to push-pull */  
+  GPIOG->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PGx pins */ 
+  GPIOG->PUPDR   = 0x00000000;
+  
+  /* Connect PHx pins to FMC Alternate function */
+  GPIOH->AFR[0]  = 0x00C0CC00;
+  GPIOH->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PHx pins in Alternate function mode */ 
+  GPIOH->MODER   = 0xAAAA08A0;
+  /* Configure PHx pins speed to 50 MHz */ 
+  GPIOH->OSPEEDR = 0xAAAA08A0;
+  /* Configure PHx pins Output type to push-pull */  
+  GPIOH->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PHx pins */ 
+  GPIOH->PUPDR   = 0x00000000;
+  
+  /* Connect PIx pins to FMC Alternate function */
+  GPIOI->AFR[0]  = 0xCCCCCCCC;
+  GPIOI->AFR[1]  = 0x00000CC0;
+  /* Configure PIx pins in Alternate function mode */ 
+  GPIOI->MODER   = 0x0028AAAA;
+  /* Configure PIx pins speed to 50 MHz */ 
+  GPIOI->OSPEEDR = 0x0028AAAA;
+  /* Configure PIx pins Output type to push-pull */  
+  GPIOI->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PIx pins */ 
+  GPIOI->PUPDR   = 0x00000000;
+  
+/*-- FMC Configuration -------------------------------------------------------*/
+  /* Enable the FMC interface clock */
+  RCC->AHB3ENR |= 0x00000001;
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB3ENR, RCC_AHB3ENR_FMCEN);
+
+  FMC_Bank5_6->SDCR[0] = 0x000019E4;
+  FMC_Bank5_6->SDTR[0] = 0x01115351;      
+  
+  /* SDRAM initialization sequence */
+  /* Clock enable command */
+  FMC_Bank5_6->SDCMR = 0x00000011; 
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+
+  /* Delay */
+  for (index = 0; index<1000; index++);
+  
+  /* PALL command */
+  FMC_Bank5_6->SDCMR = 0x00000012;           
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+  
+  /* Auto refresh command */
+  FMC_Bank5_6->SDCMR = 0x00000073;
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+ 
+  /* MRD register program */
+  FMC_Bank5_6->SDCMR = 0x00046014;
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  } 
+  
+  /* Set refresh count */
+  tmpreg = FMC_Bank5_6->SDRTR;
+  FMC_Bank5_6->SDRTR = (tmpreg | (0x0000027C<<1));
+  
+  /* Disable write protection */
+  tmpreg = FMC_Bank5_6->SDCR[0]; 
+  FMC_Bank5_6->SDCR[0] = (tmpreg & 0xFFFFFDFF);
+
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)
+  /* Configure and enable Bank1_SRAM2 */
+  FMC_Bank1->BTCR[2]  = 0x00001011;
+  FMC_Bank1->BTCR[3]  = 0x00000201;
+  FMC_Bank1E->BWTR[2] = 0x0fffffff;
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx */ 
+#if defined(STM32F469xx) || defined(STM32F479xx)
+  /* Configure and enable Bank1_SRAM2 */
+  FMC_Bank1->BTCR[2]  = 0x00001091;
+  FMC_Bank1->BTCR[3]  = 0x00110212;
+  FMC_Bank1E->BWTR[2] = 0x0fffffff;
+#endif /* STM32F469xx || STM32F479xx */
+
+  (void)(tmp); 
+}
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx || STM32F469xx || STM32F479xx */
+#elif defined (DATA_IN_ExtSRAM) || defined (DATA_IN_ExtSDRAM)
+/**
+  * @brief  Setup the external memory controller.
+  *         Called in startup_stm32f4xx.s before jump to main.
+  *         This function configures the external memories (SRAM/SDRAM)
+  *         This SRAM/SDRAM will be used as program data memory (including heap and stack).
+  * @param  None
+  * @retval None
+  */
+void SystemInit_ExtMemCtl(void)
+{
+  __IO uint32_t tmp = 0x00;
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F446xx) || defined(STM32F469xx) || defined(STM32F479xx)
+#if defined (DATA_IN_ExtSDRAM)
+  register uint32_t tmpreg = 0, timeout = 0xFFFF;
+  register __IO uint32_t index;
+
+#if defined(STM32F446xx)
+  /* Enable GPIOA, GPIOC, GPIOD, GPIOE, GPIOF, GPIOG interface
+      clock */
+  RCC->AHB1ENR |= 0x0000007D;
+#else
+  /* Enable GPIOC, GPIOD, GPIOE, GPIOF, GPIOG, GPIOH and GPIOI interface 
+      clock */
+  RCC->AHB1ENR |= 0x000001F8;
+#endif /* STM32F446xx */  
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB1ENR, RCC_AHB1ENR_GPIOCEN);
+  
+#if defined(STM32F446xx)
+  /* Connect PAx pins to FMC Alternate function */
+  GPIOA->AFR[0]  |= 0xC0000000;
+  GPIOA->AFR[1]  |= 0x00000000;
+  /* Configure PDx pins in Alternate function mode */
+  GPIOA->MODER   |= 0x00008000;
+  /* Configure PDx pins speed to 50 MHz */
+  GPIOA->OSPEEDR |= 0x00008000;
+  /* Configure PDx pins Output type to push-pull */
+  GPIOA->OTYPER  |= 0x00000000;
+  /* No pull-up, pull-down for PDx pins */
+  GPIOA->PUPDR   |= 0x00000000;
+
+  /* Connect PCx pins to FMC Alternate function */
+  GPIOC->AFR[0]  |= 0x00CC0000;
+  GPIOC->AFR[1]  |= 0x00000000;
+  /* Configure PDx pins in Alternate function mode */
+  GPIOC->MODER   |= 0x00000A00;
+  /* Configure PDx pins speed to 50 MHz */
+  GPIOC->OSPEEDR |= 0x00000A00;
+  /* Configure PDx pins Output type to push-pull */
+  GPIOC->OTYPER  |= 0x00000000;
+  /* No pull-up, pull-down for PDx pins */
+  GPIOC->PUPDR   |= 0x00000000;
+#endif /* STM32F446xx */
+
+  /* Connect PDx pins to FMC Alternate function */
+  GPIOD->AFR[0]  = 0x000000CC;
+  GPIOD->AFR[1]  = 0xCC000CCC;
+  /* Configure PDx pins in Alternate function mode */  
+  GPIOD->MODER   = 0xA02A000A;
+  /* Configure PDx pins speed to 50 MHz */  
+  GPIOD->OSPEEDR = 0xA02A000A;
+  /* Configure PDx pins Output type to push-pull */  
+  GPIOD->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PDx pins */ 
+  GPIOD->PUPDR   = 0x00000000;
+
+  /* Connect PEx pins to FMC Alternate function */
+  GPIOE->AFR[0]  = 0xC00000CC;
+  GPIOE->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PEx pins in Alternate function mode */ 
+  GPIOE->MODER   = 0xAAAA800A;
+  /* Configure PEx pins speed to 50 MHz */ 
+  GPIOE->OSPEEDR = 0xAAAA800A;
+  /* Configure PEx pins Output type to push-pull */  
+  GPIOE->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PEx pins */ 
+  GPIOE->PUPDR   = 0x00000000;
+
+  /* Connect PFx pins to FMC Alternate function */
+  GPIOF->AFR[0]  = 0xCCCCCCCC;
+  GPIOF->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PFx pins in Alternate function mode */   
+  GPIOF->MODER   = 0xAA800AAA;
+  /* Configure PFx pins speed to 50 MHz */ 
+  GPIOF->OSPEEDR = 0xAA800AAA;
+  /* Configure PFx pins Output type to push-pull */  
+  GPIOF->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PFx pins */ 
+  GPIOF->PUPDR   = 0x00000000;
+
+  /* Connect PGx pins to FMC Alternate function */
+  GPIOG->AFR[0]  = 0xCCCCCCCC;
+  GPIOG->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PGx pins in Alternate function mode */ 
+  GPIOG->MODER   = 0xAAAAAAAA;
+  /* Configure PGx pins speed to 50 MHz */ 
+  GPIOG->OSPEEDR = 0xAAAAAAAA;
+  /* Configure PGx pins Output type to push-pull */  
+  GPIOG->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PGx pins */ 
+  GPIOG->PUPDR   = 0x00000000;
+
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F469xx) || defined(STM32F479xx)  
+  /* Connect PHx pins to FMC Alternate function */
+  GPIOH->AFR[0]  = 0x00C0CC00;
+  GPIOH->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PHx pins in Alternate function mode */ 
+  GPIOH->MODER   = 0xAAAA08A0;
+  /* Configure PHx pins speed to 50 MHz */ 
+  GPIOH->OSPEEDR = 0xAAAA08A0;
+  /* Configure PHx pins Output type to push-pull */  
+  GPIOH->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PHx pins */ 
+  GPIOH->PUPDR   = 0x00000000;
+  
+  /* Connect PIx pins to FMC Alternate function */
+  GPIOI->AFR[0]  = 0xCCCCCCCC;
+  GPIOI->AFR[1]  = 0x00000CC0;
+  /* Configure PIx pins in Alternate function mode */ 
+  GPIOI->MODER   = 0x0028AAAA;
+  /* Configure PIx pins speed to 50 MHz */ 
+  GPIOI->OSPEEDR = 0x0028AAAA;
+  /* Configure PIx pins Output type to push-pull */  
+  GPIOI->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PIx pins */ 
+  GPIOI->PUPDR   = 0x00000000;
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx || STM32F469xx || STM32F479xx */
+  
+/*-- FMC Configuration -------------------------------------------------------*/
+  /* Enable the FMC interface clock */
+  RCC->AHB3ENR |= 0x00000001;
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB3ENR, RCC_AHB3ENR_FMCEN);
+
+  /* Configure and enable SDRAM bank1 */
+#if defined(STM32F446xx)
+  FMC_Bank5_6->SDCR[0] = 0x00001954;
+#else  
+  FMC_Bank5_6->SDCR[0] = 0x000019E4;
+#endif /* STM32F446xx */
+  FMC_Bank5_6->SDTR[0] = 0x01115351;      
+  
+  /* SDRAM initialization sequence */
+  /* Clock enable command */
+  FMC_Bank5_6->SDCMR = 0x00000011; 
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+
+  /* Delay */
+  for (index = 0; index<1000; index++);
+  
+  /* PALL command */
+  FMC_Bank5_6->SDCMR = 0x00000012;           
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+  
+  /* Auto refresh command */
+#if defined(STM32F446xx)
+  FMC_Bank5_6->SDCMR = 0x000000F3;
+#else  
+  FMC_Bank5_6->SDCMR = 0x00000073;
+#endif /* STM32F446xx */
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  }
+ 
+  /* MRD register program */
+#if defined(STM32F446xx)
+  FMC_Bank5_6->SDCMR = 0x00044014;
+#else  
+  FMC_Bank5_6->SDCMR = 0x00046014;
+#endif /* STM32F446xx */
+  tmpreg = FMC_Bank5_6->SDSR & 0x00000020;
+  timeout = 0xFFFF;
+  while((tmpreg != 0) && (timeout-- > 0))
+  {
+    tmpreg = FMC_Bank5_6->SDSR & 0x00000020; 
+  } 
+  
+  /* Set refresh count */
+  tmpreg = FMC_Bank5_6->SDRTR;
+#if defined(STM32F446xx)
+  FMC_Bank5_6->SDRTR = (tmpreg | (0x0000050C<<1));
+#else    
+  FMC_Bank5_6->SDRTR = (tmpreg | (0x0000027C<<1));
+#endif /* STM32F446xx */
+  
+  /* Disable write protection */
+  tmpreg = FMC_Bank5_6->SDCR[0]; 
+  FMC_Bank5_6->SDCR[0] = (tmpreg & 0xFFFFFDFF);
+#endif /* DATA_IN_ExtSDRAM */
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx || STM32F446xx || STM32F469xx || STM32F479xx */
+
+#if defined(STM32F405xx) || defined(STM32F415xx) || defined(STM32F407xx) || defined(STM32F417xx)\
+ || defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)\
+ || defined(STM32F469xx) || defined(STM32F479xx) || defined(STM32F412Zx) || defined(STM32F412Vx)
+
+#if defined(DATA_IN_ExtSRAM)
+/*-- GPIOs Configuration -----------------------------------------------------*/
+   /* Enable GPIOD, GPIOE, GPIOF and GPIOG interface clock */
+  RCC->AHB1ENR   |= 0x00000078;
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB1ENR, RCC_AHB1ENR_GPIODEN);
+  
+  /* Connect PDx pins to FMC Alternate function */
+  GPIOD->AFR[0]  = 0x00CCC0CC;
+  GPIOD->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PDx pins in Alternate function mode */  
+  GPIOD->MODER   = 0xAAAA0A8A;
+  /* Configure PDx pins speed to 100 MHz */  
+  GPIOD->OSPEEDR = 0xFFFF0FCF;
+  /* Configure PDx pins Output type to push-pull */  
+  GPIOD->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PDx pins */ 
+  GPIOD->PUPDR   = 0x00000000;
+
+  /* Connect PEx pins to FMC Alternate function */
+  GPIOE->AFR[0]  = 0xC00CC0CC;
+  GPIOE->AFR[1]  = 0xCCCCCCCC;
+  /* Configure PEx pins in Alternate function mode */ 
+  GPIOE->MODER   = 0xAAAA828A;
+  /* Configure PEx pins speed to 100 MHz */ 
+  GPIOE->OSPEEDR = 0xFFFFC3CF;
+  /* Configure PEx pins Output type to push-pull */  
+  GPIOE->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PEx pins */ 
+  GPIOE->PUPDR   = 0x00000000;
+
+  /* Connect PFx pins to FMC Alternate function */
+  GPIOF->AFR[0]  = 0x00CCCCCC;
+  GPIOF->AFR[1]  = 0xCCCC0000;
+  /* Configure PFx pins in Alternate function mode */   
+  GPIOF->MODER   = 0xAA000AAA;
+  /* Configure PFx pins speed to 100 MHz */ 
+  GPIOF->OSPEEDR = 0xFF000FFF;
+  /* Configure PFx pins Output type to push-pull */  
+  GPIOF->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PFx pins */ 
+  GPIOF->PUPDR   = 0x00000000;
+
+  /* Connect PGx pins to FMC Alternate function */
+  GPIOG->AFR[0]  = 0x00CCCCCC;
+  GPIOG->AFR[1]  = 0x000000C0;
+  /* Configure PGx pins in Alternate function mode */ 
+  GPIOG->MODER   = 0x00085AAA;
+  /* Configure PGx pins speed to 100 MHz */ 
+  GPIOG->OSPEEDR = 0x000CAFFF;
+  /* Configure PGx pins Output type to push-pull */  
+  GPIOG->OTYPER  = 0x00000000;
+  /* No pull-up, pull-down for PGx pins */ 
+  GPIOG->PUPDR   = 0x00000000;
+  
+/*-- FMC/FSMC Configuration --------------------------------------------------*/
+  /* Enable the FMC/FSMC interface clock */
+  RCC->AHB3ENR         |= 0x00000001;
+
+#if defined(STM32F427xx) || defined(STM32F437xx) || defined(STM32F429xx) || defined(STM32F439xx)
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB3ENR, RCC_AHB3ENR_FMCEN);
+  /* Configure and enable Bank1_SRAM2 */
+  FMC_Bank1->BTCR[2]  = 0x00001011;
+  FMC_Bank1->BTCR[3]  = 0x00000201;
+  FMC_Bank1E->BWTR[2] = 0x0fffffff;
+#endif /* STM32F427xx || STM32F437xx || STM32F429xx || STM32F439xx */ 
+#if defined(STM32F469xx) || defined(STM32F479xx)
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB3ENR, RCC_AHB3ENR_FMCEN);
+  /* Configure and enable Bank1_SRAM2 */
+  FMC_Bank1->BTCR[2]  = 0x00001091;
+  FMC_Bank1->BTCR[3]  = 0x00110212;
+  FMC_Bank1E->BWTR[2] = 0x0fffffff;
+#endif /* STM32F469xx || STM32F479xx */
+#if defined(STM32F405xx) || defined(STM32F415xx) || defined(STM32F407xx)|| defined(STM32F417xx)\
+   || defined(STM32F412Zx) || defined(STM32F412Vx)
+  /* Delay after an RCC peripheral clock enabling */
+  tmp = READ_BIT(RCC->AHB3ENR, RCC_AHB3ENR_FSMCEN);
+  /* Configure and enable Bank1_SRAM2 */
+  FSMC_Bank1->BTCR[2]  = 0x00001011;
+  FSMC_Bank1->BTCR[3]  = 0x00000201;
+  FSMC_Bank1E->BWTR[2] = 0x0FFFFFFF;
+#endif /* STM32F405xx || STM32F415xx || STM32F407xx || STM32F417xx || STM32F412Zx || STM32F412Vx */
+
+#endif /* DATA_IN_ExtSRAM */
+#endif /* STM32F405xx || STM32F415xx || STM32F407xx || STM32F417xx || STM32F427xx || STM32F437xx ||\
+          STM32F429xx || STM32F439xx || STM32F469xx || STM32F479xx || STM32F412Zx || STM32F412Vx  */ 
+  (void)(tmp); 
+}
+#endif /* DATA_IN_ExtSRAM && DATA_IN_ExtSDRAM */
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+```
+
+### FILE: ./Src/tasks/task_compass.c
+```c
+/*
+ * task_compass.c
+ * HMC5883L / QMC5883L magnetometer on I2C1 (PB7=SDA, PB8=SCL).
+ * Auto-detected by compass.c.
+ *
+ * Polls at 10 Hz, writes heading to g_heading_deg, and writes
+ * raw XYZ + error counts into g_gps_dbg for the debug task.
+ */
+
+#include "tasks/task_compass.h"
+#include "tasks/task_debug.h"       /* debug_printf + GPS_Debug_State_t + g_gps_dbg */
+#include "app_types.h"
+#include "drivers/compass.h"
+
+/* Shared heading state */
+volatile float g_heading_deg = 0.0f;
+
+extern I2C_HandleTypeDef hi2c1;
+/* g_gps_dbg is declared extern via tasks/task_debug.h */
+
+/* ── Extended read that also returns raw XYZ ─────────────────────
+ * We call the existing Compass_Read() which returns heading, then
+ * re-read raw registers for the debug display. To keep it simple
+ * we duplicate a 6-byte register read here rather than changing
+ * the compass driver ABI.
+ *
+ * QMC5883L: regs 0x00-0x05 → XL XH YL YH ZL ZH
+ * HMC5883L: regs 0x03-0x08 → XH XL ZH ZL YH YL
+ * ──────────────────────────────────────────────────────────────── */
+static void compass_read_raw(I2C_HandleTypeDef *hi2c,
+                              int16_t *rx, int16_t *ry, int16_t *rz)
+{
+    uint8_t buf[6] = {0};
+    CompassChip_t chip = Compass_GetChip();
+
+    if (chip == COMPASS_CHIP_QMC5883L) {
+        uint8_t reg = 0x00;
+        if (HAL_I2C_Master_Transmit(hi2c, (0x0D << 1),
+                                    &reg, 1, 20) == HAL_OK)
+            HAL_I2C_Master_Receive(hi2c, (0x0D << 1),
+                                   buf, 6, 20);
+        *rx = (int16_t)((buf[1] << 8) | buf[0]);
+        *ry = (int16_t)((buf[3] << 8) | buf[2]);
+        *rz = (int16_t)((buf[5] << 8) | buf[4]);
+    } else if (chip == COMPASS_CHIP_HMC5883L) {
+        uint8_t reg = 0x03;
+        if (HAL_I2C_Master_Transmit(hi2c, (0x1E << 1),
+                                    &reg, 1, 20) == HAL_OK)
+            HAL_I2C_Master_Receive(hi2c, (0x1E << 1),
+                                   buf, 6, 20);
+        *rx = (int16_t)((buf[0] << 8) | buf[1]);
+        *rz = (int16_t)((buf[2] << 8) | buf[3]);
+        *ry = (int16_t)((buf[4] << 8) | buf[5]);
+    } else {
+        *rx = *ry = *rz = 0;
+    }
+}
+static void i2c_bus_recover(void)
+{
+    /* Temporarily reconfigure PB7(SDA) and PB8(SCL) as GPIO OD */
+    GPIO_InitTypeDef g = {0};
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7 | GPIO_PIN_8, GPIO_PIN_SET);
+    g.Pin   = GPIO_PIN_7 | GPIO_PIN_8;
+    g.Mode  = GPIO_MODE_OUTPUT_OD;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &g);
+
+    /* 9 SCL pulses — enough to drain any in-progress byte */
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+        osDelay(2);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+        osDelay(2);
+    }
+
+    /* Generate STOP: SDA goes high while SCL is high */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+    osDelay(2);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+    osDelay(2);
+
+    /* Re-init I2C peripheral (hi2c1 handle already has config from main) */
+    HAL_I2C_DeInit(&hi2c1);
+    osDelay(10);
+    HAL_I2C_Init(&hi2c1);
+    osDelay(10);
+}
+void CompassTask(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(2000U));
+    if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(500U)) == pdTRUE) {
+        i2c_bus_recover();
+        xSemaphoreGive(xI2CMutex);
+    }
+    bool init_ok = false;
+
+    /* ── DIAGNOSTIC: I2C bus scanner ───────────────────────────────────
+     * Scans all 127 addresses and prints every device that ACKs.
+     * Expected: 0x0D (QMC5883L) or 0x1E (HMC5883L).
+     * If NOTHING responds: pull-ups missing or wiring open.
+     * Remove once compass is confirmed working.
+     * ─────────────────────────────────────────────────────────────────── */
+    if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(1000U)) == pdTRUE)
+    {
+        debug_printf("[Compass-DIAG] Scanning I2C1 bus (SDA=PB7 SCL=PB8)...\r\n");
+        uint8_t found = 0;
+        for (uint8_t addr = 1; addr < 128; addr++)
+        {
+            if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1),
+                                       2, 10) == HAL_OK)
+            {
+                debug_printf("[Compass-DIAG] ACK at 0x%02X%s\r\n", addr,
+                             (addr == 0x0D) ? " <- QMC5883L" :
+                             (addr == 0x1E) ? " <- HMC5883L" : "");
+                found++;
+            }
+        }
+        if (found == 0) {
+            debug_printf("[Compass-DIAG] NO devices found.\r\n");
+            debug_printf("[Compass-DIAG] Check: 4.7k pull-ups on PB7+PB8 to 3.3V\r\n");
+            debug_printf("[Compass-DIAG] Check: JST2 white->PB8(SCL) orange->PB7(SDA)\r\n");
+            debug_printf("[Compass-DIAG] Check: compass powered (VCC on JST1 red wire)\r\n");
+        } else {
+            debug_printf("[Compass-DIAG] Found %u device(s) on bus.\r\n", found);
+        }
+        xSemaphoreGive(xI2CMutex);
+    }
+    /* ── END DIAGNOSTIC ─────────────────────────────────────────────── */
+
+    for (uint32_t attempt = 0; attempt < 5U; attempt++)
+    {
+        if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(500U)) == pdTRUE)
+        {
+            init_ok = Compass_Init(&hi2c1);
+            xSemaphoreGive(xI2CMutex);
+            if (init_ok) break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200U));
+    }
+
+    if (!init_ok) {
+        debug_printf("[Compass] Init FAILED (SDA=PB7 SCL=PB8)\r\n");
+    } else {
+        CompassChip_t chip = Compass_GetChip();
+        debug_printf("[Compass] Init OK — chip: %s\r\n",
+                     (chip == COMPASS_CHIP_QMC5883L) ? "QMC5883L (0x0D)" :
+                     (chip == COMPASS_CHIP_HMC5883L) ? "HMC5883L (0x1E)" :
+                                                        "Unknown");
+    }
+
+    Compass_Data_t comp;
+
+    for (;;)
+    {
+        if (!init_ok)
+        {
+            vTaskDelay(pdMS_TO_TICKS(5000U));
+
+            if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(200U)) == pdTRUE)
+            {
+                init_ok = Compass_Init(&hi2c1);
+                xSemaphoreGive(xI2CMutex);
+                if (init_ok)
+                    debug_printf("[Compass] Re-init OK\r\n");
+            }
+            continue;
+        }
+
+        if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(100U)) == pdTRUE)
+        {
+            Compass_Read(&hi2c1, &comp);
+
+            /* Read raw XYZ for debug display */
+            int16_t rx, ry, rz;
+            compass_read_raw(&hi2c1, &rx, &ry, &rz);
+
+            xSemaphoreGive(xI2CMutex);
+
+            if (comp.valid)
+            {
+                /* Check for overflow (both chips return -4096 on overflow) */
+                bool overflow = (rx == -4096 || ry == -4096);
+
+                taskENTER_CRITICAL();
+                g_heading_deg        = comp.heading_deg;
+                g_gps_dbg.cmp_raw_x  = rx;
+                g_gps_dbg.cmp_raw_y  = ry;
+                g_gps_dbg.cmp_raw_z  = rz;
+                if (overflow) g_gps_dbg.cmp_overflows++;
+                taskEXIT_CRITICAL();
+            }
+            else
+            {
+                taskENTER_CRITICAL();
+                g_gps_dbg.cmp_read_errors++;
+                taskEXIT_CRITICAL();
+
+                debug_printf("[Compass] Read error #%lu — reinit\r\n",
+                             (unsigned long)g_gps_dbg.cmp_read_errors);
+
+                if (xSemaphoreTake(xI2CMutex, pdMS_TO_TICKS(500U)) == pdTRUE)
+                {
+                	i2c_bus_recover();
+                    init_ok = Compass_Init(&hi2c1);
+                    xSemaphoreGive(xI2CMutex);
+                    if (init_ok)
+                        debug_printf("[Compass] Re-init OK\r\n");
+                }
+            }
+        }
+        else
+        {
+            debug_printf("[Compass] I2C mutex timeout\r\n");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100U));  /* 10 Hz */
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_debug.c
+```c
+/*
+ * task_debug.c
+ * Debug output via USART2 (PA2 TX) at 115 200 baud → USB-TTL bridge.
+ *
+ * debug_printf() is safe to call from any task.
+ * Uses xUART2Mutex to serialise access.
+ *
+ * DebugTask now prints a FULL GPS + Compass diagnostic block every 5 s:
+ *
+ *   [GPS-DBG] Sentences rx'd: 42  RMC parsed: 10  Fix: NO (V)
+ *   [GPS-DBG] Sats in view: 0  Sats used: 0  Fix mode: 1 (No fix)
+ *   [GPS-DBG] PDOP: 99.9  HDOP: 99.9  VDOP: 99.9
+ *   [GPS-DBG] Last RMC age: 2340 ms
+ *   [GPS-DBG] HINT: Module sees 0 sats — check antenna / move outside
+ *   [COMPASS-DBG] Chip: QMC5883L (0x0D)  Init: OK
+ *   [COMPASS-DBG] Raw X:  1234  Y:  -567  Z:   890
+ *   [COMPASS-DBG] Heading: 143.2 deg  Valid: YES
+ *   [COMPASS-DBG] Read errors: 0  Overflows: 0
+ */
+
+#include "tasks/task_debug.h"
+#include "app_types.h"
+#include "drivers/compass.h"    /* CompassChip_t, Compass_GetChip() */
+#include <stdarg.h>
+#include <string.h>
+#include <stdio.h>
+
+/* ── tunables ─────────────────────────────────────────────────────────── */
+#define DEBUG_BUF_SIZE   256
+#define DEBUG_TX_TIMEOUT 200   /* ms */
+
+/* ── hardware handle ──────────────────────────────────────────────────── */
+extern UART_HandleTypeDef huart2;
+
+/* Fix-mode values from $GPGSA field 2 (also used in task_gps.c) */
+#define GPS_FIX_NONE   1
+#define GPS_FIX_2D     2
+#define GPS_FIX_3D     3
+
+/*
+ * GPS_Debug_State_t is declared in task_debug.h.
+ * This is the one definition (storage) — all other TUs use extern.
+ */
+GPS_Debug_State_t g_gps_dbg = {
+    .fix_mode    = GPS_FIX_NONE,
+    .pdop        = 99.9f,
+    .hdop        = 99.9f,
+    .vdop        = 99.9f,
+    .last_status = 'V',
+};
+
+/* ── Public printf ───────────────────────────────────────────────────── */
+void debug_printf(const char *fmt, ...)
+{
+    if (xUART2Mutex == NULL) {
+        char buf[DEBUG_BUF_SIZE];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        HAL_UART_Transmit(&huart2, (uint8_t *)buf,
+                          (uint16_t)strlen(buf), DEBUG_TX_TIMEOUT);
+        return;
+    }
+
+    if (xSemaphoreTake(xUART2Mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        char buf[DEBUG_BUF_SIZE];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        HAL_UART_Transmit(&huart2, (uint8_t *)buf,
+                          (uint16_t)strlen(buf), DEBUG_TX_TIMEOUT);
+        xSemaphoreGive(xUART2Mutex);
+    }
+}
+
+/* ── Helper: fix-mode string ─────────────────────────────────────────── */
+static const char *fix_mode_str(uint8_t m)
+{
+    switch (m) {
+        case GPS_FIX_2D: return "2D";
+        case GPS_FIX_3D: return "3D";
+        default:         return "No fix";
+    }
+}
+
+/* ── Helper: compass chip string ─────────────────────────────────────── */
+static const char *chip_str(CompassChip_t c)
+{
+    switch (c) {
+        case COMPASS_CHIP_HMC5883L: return "HMC5883L (0x1E)";
+        case COMPASS_CHIP_QMC5883L: return "QMC5883L (0x0D)";
+        default:                    return "UNKNOWN  (not detected)";
+    }
+}
+
+/* ── Periodic status task ────────────────────────────────────────────── */
+void DebugTask(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    debug_printf("\r\n");
+    debug_printf("============================================\r\n");
+    debug_printf("  STM32F446RE + FreeRTOS  —  System Boot   \r\n");
+    debug_printf("  Build: " __DATE__ " " __TIME__ "         \r\n");
+    debug_printf("============================================\r\n");
+
+    for (;;)
+    {
+        SensorData_t env_data;
+
+        bool got_sensor = (xQueuePeek(xSensorQueue, &env_data,
+                           pdMS_TO_TICKS(1500)) == pdTRUE);
+
+        /* ── Standard system line ── */
+        debug_printf("[SYS] Tick:%lu | GPS:%.5f,%.5f(%s) | HDG:%.1f\r\n",
+                     (unsigned long)xTaskGetTickCount(),
+                     g_gps_lat,
+                     g_gps_lon,
+                     g_gps_valid ? "OK" : "--",
+                     g_heading_deg);
+
+        /* ── Environment ── */
+        if (got_sensor) {
+            debug_printf(
+                "[ENV] Temp:%.1fC | Hum:%.1f%% | MQ135:%.1fppm"
+                " | Turb:%.2fNTU | pH:%.2f | TDS:%.1fppm\r\n",
+                env_data.temperature,
+                env_data.humidity,
+                env_data.mq135_ppm,
+                env_data.turbidity_ntu,
+                env_data.ph,
+                env_data.tds_ppm);
+        } else {
+            debug_printf("[ENV] Waiting for sensor data...\r\n");
+        }
+
+        /* ── FlySky ── */
+        bool flysky_active = (xTaskGetTickCount() - g_last_flysky_tick)
+                              < pdMS_TO_TICKS(500);
+        if (flysky_active) {
+            debug_printf("[FLYSKY] Throttle:%d | Steering:%d\r\n",
+                         g_flysky_throttle, g_flysky_steering);
+        } else {
+            debug_printf("[FLYSKY] No signal\r\n");
+        }
+
+        /* ════════════════════════════════════════════════════════════
+         *  GPS FULL DEBUG BLOCK
+         * ════════════════════════════════════════════════════════════ */
+
+        /* Snapshot the debug struct under critical section (GPS task
+         * writes to it from its own loop, so guard against torn reads). */
+        GPS_Debug_State_t snap;
+        taskENTER_CRITICAL();
+        snap = g_gps_dbg;
+        taskEXIT_CRITICAL();
+
+        uint32_t rmc_age = xTaskGetTickCount() - snap.last_rmc_tick;
+
+        debug_printf(
+            "[GPS-DBG] Sentences rx: %lu  |  RMC parsed: %lu  |"
+            "  Fix: %s (%c)\r\n",
+            (unsigned long)snap.sentences_rx,
+            (unsigned long)snap.rmc_parsed,
+            (snap.last_status == 'A') ? "YES" : "NO",
+            snap.last_status);
+
+        debug_printf(
+            "[GPS-DBG] Sats in view: %u  |  Sats used: %u  |"
+            "  Fix mode: %u (%s)\r\n",
+            snap.sats_in_view,
+            snap.sats_used,
+            snap.fix_mode,
+            fix_mode_str(snap.fix_mode));
+
+        debug_printf(
+            "[GPS-DBG] PDOP: %.1f  HDOP: %.1f  VDOP: %.1f\r\n",
+            snap.pdop, snap.hdop, snap.vdop);
+
+        if (snap.last_rmc_tick == 0) {
+            debug_printf("[GPS-DBG] Last RMC: never received\r\n");
+        } else {
+            debug_printf("[GPS-DBG] Last RMC age: %lu ms\r\n",
+                         (unsigned long)rmc_age);
+        }
+
+        /* Actionable hint for indoor / acquiring state */
+        if (snap.sats_in_view == 0) {
+            debug_printf(
+                "[GPS-DBG] HINT: No satellites visible."
+                " Move near a window or outside.\r\n");
+        } else if (snap.fix_mode == GPS_FIX_NONE) {
+            debug_printf(
+                "[GPS-DBG] HINT: %u sat(s) in view but no fix yet."
+                " Keep antenna skyward (cold-start can take 30-90 s).\r\n",
+                snap.sats_in_view);
+        } else {
+            debug_printf(
+                "[GPS-DBG] HINT: %u sat(s) used — %s fix active."
+                " HDOP %.1f %s\r\n",
+                snap.sats_used,
+                fix_mode_str(snap.fix_mode),
+                snap.hdop,
+                (snap.hdop < 2.0f) ? "(excellent)" :
+                (snap.hdop < 5.0f) ? "(good)"      :
+                (snap.hdop < 10.f) ? "(moderate)"  : "(poor)");
+        }
+
+        /* ════════════════════════════════════════════════════════════
+         *  COMPASS FULL DEBUG BLOCK
+         * ════════════════════════════════════════════════════════════ */
+
+        CompassChip_t chip = Compass_GetChip();
+
+        debug_printf(
+            "[COMPASS-DBG] Chip: %s  |  Init: %s\r\n",
+            chip_str(chip),
+            (chip != COMPASS_CHIP_UNKNOWN) ? "OK" : "FAILED");
+
+        /* Raw magnetometer values (taken from shared debug struct) */
+        debug_printf(
+            "[COMPASS-DBG] Raw  X: %6d  Y: %6d  Z: %6d\r\n",
+            snap.cmp_raw_x,
+            snap.cmp_raw_y,
+            snap.cmp_raw_z);
+
+        debug_printf(
+            "[COMPASS-DBG] Heading: %.1f deg  |  Valid: %s\r\n",
+            g_heading_deg,
+            (g_heading_deg != 0.0f || snap.cmp_read_errors == 0)
+                ? "YES" : "NO");
+
+        debug_printf(
+            "[COMPASS-DBG] Read errors: %lu  |  Overflows: %lu\r\n",
+            (unsigned long)snap.cmp_read_errors,
+            (unsigned long)snap.cmp_overflows);
+
+        if (chip == COMPASS_CHIP_UNKNOWN) {
+            debug_printf(
+                "[COMPASS-DBG] HINT: Not detected. Check SDA=PB7"
+                " SCL=PB8, 4.7k pull-ups to 3.3V, I2C address"
+                " 0x0D (QMC) or 0x1E (HMC).\r\n");
+        } else if (snap.cmp_overflows > 0) {
+            debug_printf(
+                "[COMPASS-DBG] HINT: Overflow on X or Y —"
+                " possible magnetic interference nearby.\r\n");
+        }
+
+        /* ── Heap ── */
+        debug_printf("[SYS] FreeHeap:%u bytes\r\n",
+                     (unsigned)xPortGetFreeHeapSize());
+
+        debug_printf("--------------------------------------------\r\n");
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_flysky.c
+```c
+/*
+ * task_flysky.c
+ * FlySky i6 + FSIA10B — PPM decoder via TIM2 input capture on PA0.
+ *
+ * PPM frame (8 channels, rising-to-rising):
+ *   CH1=Roll CH2=Pitch CH3=Throttle CH4=Yaw CH5-8=aux
+ *   SYNC gap > 3000µs marks end of frame
+ *
+ * Navigation mapping:
+ *   Throttle → CH3 (index 2) — left stick vertical
+ *   Steering → CH4 (index 3) — left stick horizontal
+ */
+
+#include "tasks/task_flysky.h"
+#include "app_types.h"
+#include "tasks/task_debug.h"
+#include <string.h>
+
+/* ── Channel config ──────────────────────────────────────────── */
+#define PPM_CHANNELS_MAX     8
+#define PPM_SYNC_MIN_US      3000U
+#define PPM_PULSE_MIN_US      800U
+#define PPM_PULSE_MAX_US     2200U
+
+#define PPM_CH_THROTTLE      0     /* CH3 — left stick vertical   */
+#define PPM_CH_STEERING      1     /* CH4 — left stick horizontal */
+
+/* ── Shared state written by ISR, read by task ───────────────── */
+static volatile uint16_t ppm_raw[PPM_CHANNELS_MAX];
+static volatile bool     ppm_frame_ready  = false;
+static volatile uint8_t  ppm_channel_idx  = 0;
+static volatile uint32_t ppm_prev_capture = 0;
+
+/* ── Public globals ──────────────────────────────────────────── */
+volatile TickType_t g_last_flysky_tick = 0;
+volatile int16_t    g_flysky_throttle  = 0;
+volatile int16_t    g_flysky_steering  = 0;
+
+extern TIM_HandleTypeDef htim2;
+
+/* ── TIM2 capture callback — called from TIM2_IRQHandler ─────── */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance != TIM2 ||
+        htim->Channel  != HAL_TIM_ACTIVE_CHANNEL_1)
+        return;
+
+    uint32_t now   = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+    uint32_t delta = (now >= ppm_prev_capture)
+                     ? (now - ppm_prev_capture)
+                     : (0xFFFFFFFFU - ppm_prev_capture + now + 1U);
+    ppm_prev_capture = now;
+
+    if (delta >= PPM_SYNC_MIN_US)
+    {
+        /* End of frame — mark ready if we got enough channels */
+        if (ppm_channel_idx >= 4U)
+            ppm_frame_ready = true;
+        ppm_channel_idx = 0;
+    }
+    else if (delta >= PPM_PULSE_MIN_US && delta <= PPM_PULSE_MAX_US)
+    {
+        if (ppm_channel_idx < PPM_CHANNELS_MAX)
+        {
+            ppm_raw[ppm_channel_idx] = (uint16_t)delta;
+            ppm_channel_idx++;
+        }
+    }
+}
+
+/* ── Map 1000–2000µs → -1000..+1000 ─────────────────────────── */
+static int16_t ppm_to_centered(uint16_t us)
+{
+    if (us < 1000U) us = 1000U;
+    if (us > 2000U) us = 2000U;
+    return (int16_t)(((int32_t)us - 1500) * 2);
+}
+
+/* ── Task ────────────────────────────────────────────────────── */
+void FlySkyTask(void *arg)
+{
+    (void)arg;
+
+    /* Start TIM2 input capture interrupt */
+    if (HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1) != HAL_OK)
+    {
+        debug_printf("[FlySky] FATAL: TIM2 IC start failed\r\n");
+        vTaskDelete(NULL);
+    }
+
+    debug_printf("[FlySky] PPM decoder started on PA0 (TIM2_CH1)\r\n");
+
+    uint32_t frame_count   = 0;
+    uint32_t no_signal_log = 0;
+
+    for (;;)
+    {
+        if (ppm_frame_ready)
+        {
+            ppm_frame_ready = false;
+            frame_count++;
+
+            /* Safely copy volatile channel values */
+            uint16_t raw_thr, raw_str;
+            taskENTER_CRITICAL();
+            raw_thr = ppm_raw[PPM_CH_THROTTLE];
+            raw_str = ppm_raw[PPM_CH_STEERING];
+            taskEXIT_CRITICAL();
+
+            int16_t throttle = ppm_to_centered(raw_thr);
+            int16_t steering = ppm_to_centered(raw_str);
+
+            g_flysky_throttle  = throttle;
+            g_flysky_steering  = steering;
+            g_last_flysky_tick = xTaskGetTickCount();
+
+            NavCommand_t cmd = {
+                .source    = NAV_SOURCE_FLYSKY,
+                .throttle  = throttle,
+                .steering  = steering,
+                .timestamp = xTaskGetTickCount(),
+            };
+            xQueueOverwrite(xNavQueue, &cmd);
+
+            /* Log first 3 frames then every 200th */
+            if (frame_count <= 3U || frame_count % 200U == 0U)
+            {
+                debug_printf(
+                    "[FlySky] Frame #%lu T:%d S:%d "
+                    "(raw thr:%u str:%u)\r\n",
+                    (unsigned long)frame_count,
+                    throttle, steering,
+                    raw_thr, raw_str);
+            }
+        }
+        else
+        {
+            /* Check for signal loss */
+            uint32_t age = xTaskGetTickCount() - g_last_flysky_tick;
+            if (age > pdMS_TO_TICKS(500U) && frame_count > 0U)
+            {
+                no_signal_log++;
+                if (no_signal_log % 20U == 1U)
+                    debug_printf("[FlySky] Signal lost\r\n");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_gps.c
+```c
+/*
+ * task_gps.c
+ * GPS NMEA parser on USART6 (PC7 RX) at 9600 baud.
+ *
+ * Parses:
+ *   $GPRMC / $GNRMC  — position, fix status
+ *   $GPGSV / $GNGSV  — satellites in view (count)
+ *   $GPGSA / $GNGSA  — fix mode (1/2/3), sats used, PDOP/HDOP/VDOP
+ *
+ * All debug counters are written into g_gps_dbg (defined in task_debug.c).
+ */
+
+#include "tasks/task_debug.h"   /* debug_printf + GPS_Debug_State_t + g_gps_dbg */
+#include "tasks/task_gps.h"
+#include "app_types.h"
+#include "drivers/gps_nmea.h"
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+/* ── Shared GPS position state (read by SensorTask / DebugTask) ── */
+volatile float g_gps_lat   = 0.0f;
+volatile float g_gps_lon   = 0.0f;
+volatile bool  g_gps_valid = false;
+
+/* ── DMA receive buffer ────────────────────────────────────────── */
+#define GPS_DMA_BUF   512
+static uint8_t  gps_dma_buf[GPS_DMA_BUF];
+static uint16_t gps_last_pos = 0;
+
+/* ── Line assembly ─────────────────────────────────────────────── */
+#define GPS_LINE_MAX  100
+static char    gps_line[GPS_LINE_MAX];
+static uint8_t gps_line_idx = 0;
+
+extern UART_HandleTypeDef huart6;
+
+/* g_gps_dbg is declared extern via tasks/task_debug.h */
+
+/* ------------------------------------------------------------------ */
+/* NMEA field extractor (identical to gps_nmea.c helper)              */
+/* ------------------------------------------------------------------ */
+static void field(const char *s, int n, char *out, int maxlen)
+{
+    int f = 0, i = 0, j = 0;
+    out[0] = '\0';
+    while (s[i]) {
+        if (s[i] == ',') {
+            if (f == n) { out[j] = '\0'; return; }
+            f++; j = 0;
+        } else if (f == n) {
+            if (j < maxlen - 1) out[j++] = s[i];
+        }
+        i++;
+    }
+    /* handle last field with no trailing comma */
+    if (f == n) out[j] = '\0';
+}
+
+/* ------------------------------------------------------------------ */
+/* $GPGSV / $GNGSV parser                                             */
+/* Format: $GPGSV,<total msgs>,<msg#>,<sats in view>,...*CS           */
+/* We only care about field 3 (index 3) from message #1              */
+/* ------------------------------------------------------------------ */
+static void parse_gsv(const char *sentence)
+{
+    char msg_num[4], siv[4];
+    field(sentence, 2, msg_num, sizeof(msg_num));
+    if (atoi(msg_num) != 1) return;           /* only first message has total */
+    field(sentence, 3, siv, sizeof(siv));
+    if (siv[0] == '\0') return;
+    taskENTER_CRITICAL();
+    g_gps_dbg.sats_in_view = (uint8_t)atoi(siv);
+    taskEXIT_CRITICAL();
+}
+
+/* ------------------------------------------------------------------ */
+/* $GPGSA / $GNGSA parser                                             */
+/* Format:                                                            */
+/*   $GPGSA,<Auto/M>,<fix mode>,<sv1>...<sv12>,<PDOP>,<HDOP>,<VDOP>*CS */
+/* Field indices (0-based, counting $GPGSA as field 0):              */
+/*   0=sentence  1=mode(A/M)  2=fix(1/2/3)                          */
+/*   3-14=SV PRNs (may be empty)                                     */
+/*   15=PDOP  16=HDOP  17=VDOP                                       */
+/* ------------------------------------------------------------------ */
+static void parse_gsa(const char *sentence)
+{
+    char fix[4];
+    field(sentence, 2, fix, sizeof(fix));
+    if (fix[0] == '\0') return;
+
+    uint8_t fix_mode = (uint8_t)atoi(fix);
+
+    /* Count non-empty SV fields (3-14) */
+    uint8_t used = 0;
+    char sv[6];
+    for (int i = 3; i <= 14; i++) {
+        field(sentence, i, sv, sizeof(sv));
+        if (sv[0] != '\0') used++;
+    }
+
+    char pdop_s[8], hdop_s[8], vdop_s[8];
+    field(sentence, 15, pdop_s, sizeof(pdop_s));
+    field(sentence, 16, hdop_s, sizeof(hdop_s));
+
+    /* VDOP may be followed by *CS, strip checksum */
+    field(sentence, 17, vdop_s, sizeof(vdop_s));
+    char *star = strchr(vdop_s, '*');
+    if (star) *star = '\0';
+
+    taskENTER_CRITICAL();
+    g_gps_dbg.fix_mode   = fix_mode;
+    g_gps_dbg.sats_used  = used;
+    if (pdop_s[0]) g_gps_dbg.pdop = strtof(pdop_s, NULL);
+    if (hdop_s[0]) g_gps_dbg.hdop = strtof(hdop_s, NULL);
+    if (vdop_s[0]) g_gps_dbg.vdop = strtof(vdop_s, NULL);
+    taskEXIT_CRITICAL();
+}
+
+/* ------------------------------------------------------------------ */
+/* Extract complete NMEA sentence from DMA circular buffer            */
+/* ------------------------------------------------------------------ */
+static bool gps_get_line(void)
+{
+    uint16_t dma_pos =
+        GPS_DMA_BUF - (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
+
+    while (gps_last_pos != dma_pos)
+    {
+        char c = (char)gps_dma_buf[gps_last_pos];
+        gps_last_pos = (gps_last_pos + 1U) % GPS_DMA_BUF;
+
+        if (c == '$')
+        {
+            gps_line_idx = 0;
+            gps_line[gps_line_idx++] = '$';
+
+            /* Count every sentence start */
+            taskENTER_CRITICAL();
+            g_gps_dbg.sentences_rx++;
+            taskEXIT_CRITICAL();
+        }
+        else if (c == '\n')
+        {
+            if (gps_line_idx > 6)
+            {
+                gps_line[gps_line_idx] = '\0';
+                gps_line_idx = 0;
+                return true;
+            }
+            gps_line_idx = 0;
+        }
+        else if (c != '\r')
+        {
+            if (gps_line_idx > 0)
+            {
+                if (gps_line_idx < (GPS_LINE_MAX - 1))
+                    gps_line[gps_line_idx++] = c;
+                else
+                    gps_line_idx = 0;   /* too long — discard & resync */
+            }
+        }
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* Task                                                               */
+/* ------------------------------------------------------------------ */
+void GPSTask(void *arg)
+{
+    UART_HandleTypeDef *huart = (UART_HandleTypeDef *)arg;
+
+    if (HAL_UART_Receive_DMA(huart, gps_dma_buf,
+                              sizeof(gps_dma_buf)) != HAL_OK)
+    {
+        debug_printf("[GPS] DMA start FAILED\r\n");
+        vTaskDelete(NULL);
+    }
+
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+
+    debug_printf("[GPS] Task started — 9600 baud, USART6 (PC7 RX)\r\n");
+
+    /* ── DIAGNOSTIC: raw blocking RX test (bypasses DMA entirely) ──────
+     * We stop the DMA, attempt a plain blocking read for 3 seconds, then
+     * restart DMA. This tells us if ANY bytes at all arrive on PC7.
+     * Remove this block once GPS is confirmed working.
+     * ─────────────────────────────────────────────────────────────────── */
+    HAL_UART_DMAStop(huart);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    debug_printf("[GPS-DIAG] Raw RX test — waiting 3 s for any byte on PC7...\r\n");
+    uint8_t raw[8] = {0};
+    HAL_StatusTypeDef rx_st = HAL_UART_Receive(huart, raw, 1, 3000);
+    if (rx_st == HAL_OK) {
+        debug_printf("[GPS-DIAG] GOT DATA: 0x%02X ('%c') — UART wiring OK!\r\n",
+                     raw[0], (raw[0] >= 0x20 && raw[0] < 0x7F) ? raw[0] : '.');
+        /* Grab a few more bytes to confirm NMEA stream */
+        HAL_UART_Receive(huart, raw, sizeof(raw), 200);
+        debug_printf("[GPS-DIAG] Next bytes: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                     raw[0],raw[1],raw[2],raw[3],raw[4],raw[5],raw[6],raw[7]);
+    } else {
+        debug_printf("[GPS-DIAG] TIMEOUT — no bytes received on PC7 in 3 s.\r\n");
+        debug_printf("[GPS-DIAG] Check: GPS TX (yellow) -> PC7 | VCC=5V | GND common\r\n");
+        debug_printf("[GPS-DIAG] Tip: confirm PC6/PC7 not swapped (PC6=USART6_TX)\r\n");
+    }
+
+    /* Restart DMA for normal operation */
+    if (HAL_UART_Receive_DMA(huart, gps_dma_buf,
+                              sizeof(gps_dma_buf)) != HAL_OK) {
+        debug_printf("[GPS-DIAG] DMA restart FAILED\r\n");
+        vTaskDelete(NULL);
+    }
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+    gps_last_pos = 0;
+    debug_printf("[GPS] DMA restarted — entering NMEA parse loop\r\n");
+    /* ── END DIAGNOSTIC ─────────────────────────────────────────────── */
+
+    debug_printf("[GPS] Parsing: RMC (position), GSA (fix/DOP), GSV (sats)\r\n");
+
+    uint32_t fix_count    = 0;
+    uint32_t no_fix_count = 0;
+
+    for (;;)
+    {
+        if (!gps_get_line())
+        {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        /* ── Route sentence by type ── */
+        if (strncmp(gps_line, "$GPGSV", 6) == 0 ||
+            strncmp(gps_line, "$GNGSV", 6) == 0 ||
+            strncmp(gps_line, "$GLGSV", 6) == 0)
+        {
+            parse_gsv(gps_line);
+        }
+        else if (strncmp(gps_line, "$GPGSA", 6) == 0 ||
+                 strncmp(gps_line, "$GNGSA", 6) == 0)
+        {
+            parse_gsa(gps_line);
+        }
+        else if (strncmp(gps_line, "$GPRMC", 6) == 0 ||
+                 strncmp(gps_line, "$GNRMC", 6) == 0)
+        {
+            GPS_Data_t gps;
+
+            if (GPS_ParseRMC(gps_line, &gps))
+            {
+                taskENTER_CRITICAL();
+                g_gps_lat              = gps.latitude;
+                g_gps_lon              = gps.longitude;
+                g_gps_valid            = gps.valid;
+                g_gps_dbg.rmc_parsed++;
+                g_gps_dbg.last_rmc_tick = xTaskGetTickCount();
+                /* field 2 of RMC is status — extract directly */
+                g_gps_dbg.last_status  = gps.valid ? 'A' : 'V';
+                taskEXIT_CRITICAL();
+
+                if (gps.valid)
+                {
+                    fix_count++;
+                    if (fix_count == 1U || (fix_count % 10U) == 0U)
+                    {
+                        debug_printf(
+                            "[GPS] Fix #%lu: %.6f, %.6f\r\n",
+                            (unsigned long)fix_count,
+                            gps.latitude,
+                            gps.longitude);
+                    }
+                }
+                else
+                {
+                    no_fix_count++;
+                    if ((no_fix_count % 20U) == 0U)
+                    {
+                        debug_printf(
+                            "[GPS] No fix (%lu void RMC)"
+                            " — sats in view: %u\r\n",
+                            (unsigned long)no_fix_count,
+                            g_gps_dbg.sats_in_view);
+                    }
+                }
+            }
+        }
+        /* All other sentences ($GPGLL, $GPVTG, $GPZDA, etc.) are silently
+         * counted via sentences_rx above but otherwise ignored.           */
+
+        vTaskDelay(pdMS_TO_TICKS(10));   /* yield — 9600 baud is slow */
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_motor.c
+```c
+/*
+ * task_motor.c
+ * DC motor control — 2× motors via L298N or similar driver.
+ *
+ * Hardware:
+ *   PA8  → TIM1_CH1 → Motor A PWM (left)
+ *   PA9  → TIM1_CH2 → Motor B PWM (right)
+ *   PB0  → DIR_A   (HIGH = forward)
+ *   PB1  → DIR_B   (HIGH = forward)
+ *
+ * TIM1: PSC=179, ARR=999 → 1 kHz PWM, CCR range 0–999.
+ *
+ * Mixing:
+ *   left  = throttle + steering
+ *   right = throttle - steering
+ * Values clamped to ±999 then mapped to direction + magnitude.
+ *
+ * Safety: if no NavCommand received for MOTOR_TIMEOUT_MS, stop motors.
+ * NOTE: Raspberry Pi is assumed NOT connected — RPi commands are accepted
+ *       in the queue but do not change the safety behaviour.
+ */
+#include "tasks/task_debug.h"
+#include "tasks/task_motor.h"
+#include "app_types.h"
+#include <math.h>
+#define MOTOR_TIMEOUT_MS   300   /* stop if no command within this period */
+#define PWM_MAX            999   /* matches TIM1 ARR */
+
+#define DIR_A_PORT   GPIOB
+#define DIR_A_PIN    GPIO_PIN_0
+#define DIR_B_PORT   GPIOB
+#define DIR_B_PIN    GPIO_PIN_1
+
+extern TIM_HandleTypeDef htim1;
+
+/* ── Set a single motor: speed -999..+999 ─────────────────────────── */
+static void motor_set(uint32_t channel,
+                      GPIO_TypeDef *dir_port, uint16_t dir_pin,
+                      int32_t speed)
+{
+    if (speed > PWM_MAX)  speed =  PWM_MAX;
+    if (speed < -PWM_MAX) speed = -PWM_MAX;
+
+    if (speed >= 0) {
+        HAL_GPIO_WritePin(dir_port, dir_pin, GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(&htim1, channel, (uint32_t)speed);
+    } else {
+        HAL_GPIO_WritePin(dir_port, dir_pin, GPIO_PIN_RESET);
+        __HAL_TIM_SET_COMPARE(&htim1, channel, (uint32_t)(-speed));
+    }
+}
+
+static void motors_stop(void)
+{
+    HAL_GPIO_WritePin(DIR_A_PORT, DIR_A_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DIR_B_PORT, DIR_B_PIN, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+}
+
+/* ── Task ────────────────────────────────────────────────────────────── */
+void MotorTask(void *arg)
+{
+    (void)arg;
+
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+    motors_stop();
+
+    debug_printf("[Motor] Task started\r\n");
+
+    NavCommand_t cmd;
+    TickType_t   last_cmd_tick = 0;
+    bool         armed         = false;   /* require at least one valid cmd */
+
+    for (;;)
+    {
+        if (xQueueReceive(xNavQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE)
+        {
+            armed         = true;
+            last_cmd_tick = xTaskGetTickCount();
+
+            /* Scale ±1000 input → ±999 PWM — simple differential mix */
+            int32_t thr = (int32_t)cmd.throttle * PWM_MAX / 1000;
+            int32_t str = (int32_t)cmd.steering  * PWM_MAX / 1000;
+
+            int32_t left;
+            int32_t right;
+            left  = thr + str;
+            right = thr - str;
+
+            int32_t abs_left  = (left  >= 0) ? left  : -left;
+            int32_t abs_right = (right >= 0) ? right : -right;
+
+            int32_t maxmag = (abs_left > abs_right)
+                           ? abs_left
+                           : abs_right;
+
+            if (maxmag > PWM_MAX)
+            {
+                left  = (left  * PWM_MAX) / maxmag;
+                right = (right * PWM_MAX) / maxmag;
+            }
+
+            motor_set(TIM_CHANNEL_1, DIR_A_PORT, DIR_A_PIN, left);
+            motor_set(TIM_CHANNEL_2, DIR_B_PORT, DIR_B_PIN, right);
+        }
+        else
+        {
+            /* Queue timeout: check command freshness */
+            if (armed) {
+                TickType_t age = xTaskGetTickCount() - last_cmd_tick;
+                if (age > pdMS_TO_TICKS(MOTOR_TIMEOUT_MS)) {
+                    motors_stop();
+                    armed = false;
+                    debug_printf("[Motor] Timeout — stopped\r\n");
+                }
+            }
+        }
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_rpi.c
+```c
+/*
+ * task_rpi.c
+ * Autonomous navigation commands from Raspberry Pi via USART3.
+ */
+
+#include "tasks/task_debug.h"
+#include "tasks/task_rpi.h"
+#include "app_types.h"
+
+#include <stdio.h>
+
+#define RPI_LINE_MAX             64
+#define RPI_DMA_BUF_SIZE         256
+#define RPI_FLYSKY_OVERRIDE_MS   300
+
+/* DMA circular buffer */
+static uint8_t  rpi_dma_buf[RPI_DMA_BUF_SIZE];
+
+/* Line assembly buffer */
+static char     rpi_line[RPI_LINE_MAX];
+static uint16_t rpi_last_pos = 0;
+
+extern UART_HandleTypeDef huart3;
+
+/* ------------------------------------------------------------------ */
+
+static inline int16_t clamp_nav(int16_t v)
+{
+    if (v > 1000)  return 1000;
+    if (v < -1000) return -1000;
+    return v;
+}
+
+/* ------------------------------------------------------------------ */
+
+static bool rpi_get_line(void)
+{
+    const uint16_t buf_len = sizeof(rpi_dma_buf);
+
+    uint16_t dma_pos =
+        buf_len - (uint16_t)__HAL_DMA_GET_COUNTER(huart3.hdmarx);
+
+    static uint8_t idx = 0;
+
+    while (rpi_last_pos != dma_pos)
+    {
+        char c = (char)rpi_dma_buf[rpi_last_pos];
+
+        rpi_last_pos = (rpi_last_pos + 1) % buf_len;
+
+        if ((c == '\n') || (c == '\r'))
+        {
+            if (idx > 0)
+            {
+                rpi_line[idx] = '\0';
+                idx = 0;
+                return true;
+            }
+        }
+        else
+        {
+            if (idx < (RPI_LINE_MAX - 1))
+            {
+                rpi_line[idx++] = c;
+            }
+            else
+            {
+                /* Line too long -> discard and resync */
+                idx = 0;
+            }
+        }
+    }
+
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
+
+static bool parse_rpi_cmd(const char *line, NavCommand_t *cmd)
+{
+    int16_t t = 0;
+    int16_t s = 0;
+
+    if (sscanf(line, "T:%hd,S:%hd", &t, &s) != 2)
+    {
+        return false;
+    }
+
+    t = clamp_nav(t);
+    s = clamp_nav(s);
+
+    cmd->source    = NAV_SOURCE_RPI;
+    cmd->throttle  = t;
+    cmd->steering  = s;
+    cmd->timestamp = xTaskGetTickCount();
+
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+
+void RpiUARTTask(void *arg)
+{
+    UART_HandleTypeDef *huart = (UART_HandleTypeDef *)arg;
+
+    if (HAL_UART_Receive_DMA(
+            huart,
+            rpi_dma_buf,
+            sizeof(rpi_dma_buf)) != HAL_OK)
+    {
+        debug_printf("[RPi] DMA start FAILED\r\n");
+        vTaskDelete(NULL);
+    }
+
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+
+    debug_printf("[RPi] Task started\r\n");
+
+    for (;;)
+    {
+        while (rpi_get_line())
+        {
+            TickType_t since_flysky =
+                xTaskGetTickCount() - g_last_flysky_tick;
+
+            if (since_flysky >
+                pdMS_TO_TICKS(RPI_FLYSKY_OVERRIDE_MS))
+            {
+                NavCommand_t cmd;
+
+                if (parse_rpi_cmd(rpi_line, &cmd))
+                {
+
+                    /* Recommended: queue length = 1 */
+                    xQueueOverwrite(xNavQueue, &cmd);
+
+
+
+                    debug_printf(
+                        "[RPi] CMD T:%d S:%d\r\n",
+                        cmd.throttle,
+                        cmd.steering);
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_sdlog.c
+```c
+/*
+ * task_sdlog.c
+ * Logs SensorData_t to a CSV file on the SD card via FatFS.
+ *
+ * File naming: LOG_<tick_at_boot>.CSV
+ * Format: tick,temp,hum,mq135,turbidity,ph,tds,lat,lon,heading,gps_ok,dht_ok
+ *
+ * Write strategy:
+ *   - f_open with FA_OPEN_APPEND each write (safe but slower)
+ *   - f_sync after every write for power-loss safety
+ *   - If SD mount fails, task retries every 10s and logs to debug
+ *
+ * SPI1 is used for SD. FatFS FS_REENTRANT must be 1 in ffconf.h
+ * (uses xSDMutex via ffsystem.c).
+ */
+#include "tasks/task_debug.h"
+#include "tasks/task_sdlog.h"
+#include "app_types.h"
+#include "fatfs.h"
+#include <stdio.h>
+#include <string.h>
+
+#define SD_RETRY_DELAY_MS   10000
+#define CSV_HEADER  "tick,temp_c,hum_pct,mq135_ppm,turbidity_ntu," \
+                    "ph,tds_ppm,latitude,longitude,heading_deg,gps_ok,dht_ok\n"
+
+static FATFS fs;
+static FIL   file;
+static char  fname[32];
+static bool  mounted = false;
+
+/* ── Mount with retry ────────────────────────────────────────────────── */
+static bool sd_mount(void)
+{
+    FRESULT fr;
+    if (xSemaphoreTake(xSDMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        fr = f_mount(&fs, "", 1);
+        xSemaphoreGive(xSDMutex);
+        if (fr == FR_OK) return true;
+        debug_printf("[SD] Mount failed: %d\r\n", (int)fr);
+    }
+    return false;
+}
+
+/* ── Write CSV header ────────────────────────────────────────────────── */
+static bool sd_write_header(void)
+{
+    FRESULT fr;
+    if (xSemaphoreTake(xSDMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+        if (fr == FR_OK) {
+            f_puts(CSV_HEADER, &file);
+            f_sync(&file);
+            f_close(&file);
+        }
+        xSemaphoreGive(xSDMutex);
+        return (fr == FR_OK);
+    }
+    return false;
+}
+
+/* ── Append one data row ─────────────────────────────────────────────── */
+static bool sd_append(const char *row)
+{
+    FRESULT fr;
+    bool ok = false;
+
+    if (xSemaphoreTake(xSDMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        fr = f_open(&file, fname, FA_OPEN_APPEND | FA_WRITE);
+        if (fr == FR_OK) {
+            f_puts(row, &file);
+            f_sync(&file);
+            f_close(&file);
+            ok = true;
+        } else {
+            debug_printf("[SD] f_open append failed: %d\r\n", (int)fr);
+        }
+        xSemaphoreGive(xSDMutex);
+    }
+    return ok;
+}
+
+/* ── Task ────────────────────────────────────────────────────────────── */
+void SDLogTask(void *arg)
+{
+    (void)arg;
+
+    /* Wait for peripheral init to settle */
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    /* Try to mount */
+    while (!mounted) {
+        if (sd_mount()) {
+            mounted = true;
+            debug_printf("[SD] Mounted OK\r\n");
+        } else {
+            debug_printf("[SD] Retrying in %d s...\r\n", SD_RETRY_DELAY_MS / 1000);
+            vTaskDelay(pdMS_TO_TICKS(SD_RETRY_DELAY_MS));
+        }
+    }
+
+    /* Generate unique filename from boot tick */
+    snprintf(fname, sizeof(fname), "LOG_%05lu.CSV", xTaskGetTickCount() / 1000UL);
+    debug_printf("[SD] Log file: %s\r\n", fname);
+
+    if (!sd_write_header()) {
+        debug_printf("[SD] Header write failed\r\n");
+        mounted = false;
+    }
+
+    char row[192];
+    SensorData_t data;
+    uint32_t rows_written = 0;
+
+    for (;;)
+    {
+        /* Block until a sensor reading is available (max 3s) */
+        if (xQueueReceive(xSensorQueue, &data, pdMS_TO_TICKS(3000)) == pdTRUE)
+        {
+            snprintf(row, sizeof(row),
+                "%lu,%.1f,%.1f,%.1f,%.2f,%.2f,%.1f,%.6f,%.6f,%.1f,%d,%d\n",
+                (unsigned long)data.timestamp,
+                data.temperature,
+                data.humidity,
+                data.mq135_ppm,
+                data.turbidity_ntu,
+                data.ph,
+                data.tds_ppm,
+                data.latitude,
+                data.longitude,
+                data.heading_deg,
+                (int)data.gps_valid,
+                (int)data.dht_valid);
+
+            if (mounted) {
+                if (sd_append(row)) {
+                    rows_written++;
+                    if (rows_written % 60 == 0) {
+                        debug_printf("[SD] %lu rows written\r\n",
+                                     (unsigned long)rows_written);
+                    }
+                } else {
+                    /* Try remount once */
+                    mounted = sd_mount();
+                }
+            }
+        }
+        /* If SD not mounted, keep draining queue to avoid blocking SensorTask */
+    }
+}
+
+```
+
+### FILE: ./Src/tasks/task_sensors.c
+```c
+/*
+ * task_sensors.c
+ * Reads all analog sensors via ADC1 DMA and DHT11 via bit-bang.
+ */
+
+#include "tasks/task_debug.h"
+#include "tasks/task_sensors.h"
+#include "app_types.h"
+#include "drivers/dht11.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+#define ADC_CHANNELS       4
+#define ADC_VREF           3.3f
+#define ADC_FULLSCALE      4095.0f
+
+/* Indexes into DMA buffer */
+#define IDX_MQ135          0
+#define IDX_TURBIDITY      1
+#define IDX_PH             2
+#define IDX_TDS            3
+
+/* DMA destination */
+static volatile uint16_t adc_buf[ADC_CHANNELS];
+static volatile bool     adc_done = false;
+
+extern ADC_HandleTypeDef hadc1;
+
+/* ------------------------------------------------------------------ */
+/* ADC DMA callback                                                   */
+/* ------------------------------------------------------------------ */
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        adc_done = true;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+static inline float raw_to_volt(uint16_t raw)
+{
+    return ((float)raw * ADC_VREF) / ADC_FULLSCALE;
+}
+
+static float calc_mq135(uint16_t raw)
+{
+    float volt = raw_to_volt(raw);
+
+    if (volt < 0.1f)
+    {
+        return 0.0f;
+    }
+
+    float ppm =
+        116.6020682f *
+        powf((volt / 0.5f), -2.769034857f);
+
+    return (ppm < 0.0f) ? 0.0f : ppm;
+}
+
+static float calc_turbidity(uint16_t raw)
+{
+    float volt = raw_to_volt(raw);
+    float v5   = volt * (5.0f / 3.3f);
+    float ntu  = (-1120.4f * v5 * v5) + (5742.3f * v5) - 4352.9f;
+    return (ntu < 0.0f) ? 0.0f : ntu;
+}
+
+static float calc_ph(uint16_t raw)
+{
+    float volt = raw_to_volt(raw);
+    float ph   = 7.0f + ((2.5f - volt) / 0.18f);
+
+    if (ph < 0.0f)  ph = 0.0f;
+    if (ph > 14.0f) ph = 14.0f;
+
+    return ph;
+}
+
+static float calc_tds(uint16_t raw, float temperature_c)
+{
+    float volt = raw_to_volt(raw);
+    float comp = 1.0f + (0.02f * (temperature_c - 25.0f));
+    float vc   = volt / comp;
+    float tds  = ((133.42f * vc * vc * vc)
+                - (255.86f * vc * vc)
+                + (857.39f * vc)) * 0.5f;
+    return (tds < 0.0f) ? 0.0f : tds;
+}
+
+/* ------------------------------------------------------------------ */
+/* ADC read                                                           */
+/* ------------------------------------------------------------------ */
+
+static bool adc_read_blocking(uint32_t timeout_ms)
+{
+    adc_done = false;
+
+    if (HAL_ADC_Start_DMA(
+            &hadc1,
+            (uint32_t *)adc_buf,
+            ADC_CHANNELS) != HAL_OK)
+    {
+        debug_printf("[Sensor] ADC DMA start failed\r\n");
+        return false;
+    }
+
+    TickType_t start = xTaskGetTickCount();
+
+    while (!adc_done)
+    {
+        if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(timeout_ms))
+        {
+            HAL_ADC_Stop_DMA(&hadc1);
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    HAL_ADC_Stop_DMA(&hadc1);
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Task                                                               */
+/* ------------------------------------------------------------------ */
+
+void SensorTask(void *arg)
+{
+    (void)arg;
+
+    DHT11_Init();
+
+    SensorData_t data = {0};
+
+    /*
+     * tds_temp: temperature used for TDS compensation.
+     * Kept separate from data.temperature so a DHT11 failure (which
+     * sets data.temperature = NAN for the log) does NOT propagate NAN
+     * into the TDS calculation on the next ADC cycle.
+     * Updated only on a successful DHT11 read.
+     */
+    float tds_temp = 25.0f;
+
+    /* Also initialise data.temperature so the first log row is valid */
+    data.temperature = 25.0f;
+
+    uint32_t dht_counter = 0;
+
+    debug_printf("[Sensor] Task started\r\n");
+
+    for (;;)
+    {
+        /* ---------------------------------------------------------- */
+        /* ADC sensors — uses tds_temp, never data.temperature        */
+        /* ---------------------------------------------------------- */
+
+        if (adc_read_blocking(200))
+        {
+            data.mq135_ppm     = calc_mq135    (adc_buf[IDX_MQ135]);
+            data.turbidity_ntu = calc_turbidity(adc_buf[IDX_TURBIDITY]);
+            data.ph            = calc_ph        (adc_buf[IDX_PH]);
+
+            /* TDS uses tds_temp — last confirmed good temperature */
+            data.tds_ppm       = calc_tds(adc_buf[IDX_TDS], tds_temp);
+        }
+        else
+        {
+            debug_printf("[Sensor] ADC timeout\r\n");
+        }
+
+        /* ---------------------------------------------------------- */
+        /* DHT11 every 2 seconds                                      */
+        /* ---------------------------------------------------------- */
+
+        dht_counter++;
+
+        if (dht_counter >= 2U)
+        {
+            dht_counter = 0;
+
+            DHT11_Data_t   dht;
+            DHT11_Status_t st = DHT11_Read(&dht);
+
+            if (st == DHT11_OK)
+            {
+                data.temperature = dht.temperature;
+                data.humidity    = dht.humidity;
+                data.dht_valid   = true;
+
+                /* Update TDS compensation temperature only on success */
+                tds_temp = dht.temperature;
+            }
+            else
+            {
+                /*
+                 * Mark reading invalid and write NAN to the log so the
+                 * CSV clearly shows a failed sample rather than stale data.
+                 * tds_temp is intentionally NOT updated — it keeps its
+                 * last good value so TDS stays valid.
+                 */
+                data.temperature = NAN;
+                data.humidity    = NAN;
+                data.dht_valid   = false;
+
+                if (st == DHT11_ERR_CHECKSUM)
+                {
+                    debug_printf("[Sensor] DHT11 checksum error\r\n");
+                }
+                else
+                {
+                    debug_printf("[Sensor] DHT11 timeout\r\n");
+                }
+            }
+        }
+
+        /* ---------------------------------------------------------- */
+        /* Atomic snapshot of GPS + Compass                           */
+        /* ---------------------------------------------------------- */
+
+        taskENTER_CRITICAL();
+
+        data.latitude    = g_gps_lat;
+        data.longitude   = g_gps_lon;
+        data.gps_valid   = g_gps_valid;
+        data.heading_deg = g_heading_deg;
+
+        taskEXIT_CRITICAL();
+
+        data.timestamp = xTaskGetTickCount();
+
+        /* ---------------------------------------------------------- */
+        /* Publish latest sensor sample                               */
+        /* ---------------------------------------------------------- */
+
+        xQueueOverwrite(xSensorQueue, &data);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+```
+

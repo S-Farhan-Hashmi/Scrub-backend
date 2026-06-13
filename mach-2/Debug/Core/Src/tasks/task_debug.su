@@ -1,0 +1,4 @@
+../Core/Src/tasks/task_debug.c:53:6:debug_printf	272	static
+../Core/Src/tasks/task_debug.c:79:20:fix_mode_str	16	static
+../Core/Src/tasks/task_debug.c:89:20:chip_str	16	static
+../Core/Src/tasks/task_debug.c:99:6:DebugTask	216	static

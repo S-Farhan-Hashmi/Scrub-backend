@@ -1,0 +1,9 @@
+../Core/Src/drivers/compass.c:28:13:i2c_write_reg	32	static
+../Core/Src/drivers/compass.c:35:13:i2c_read_reg	32	static
+../Core/Src/drivers/compass.c:45:13:hmc_init	32	static
+../Core/Src/drivers/compass.c:64:13:qmc_init	32	static
+../Core/Src/drivers/compass.c:92:13:hmc_read	40	static
+../Core/Src/drivers/compass.c:123:13:qmc_read	40	static
+../Core/Src/drivers/compass.c:155:6:Compass_Init	16	static
+../Core/Src/drivers/compass.c:175:6:Compass_Read	16	static
+../Core/Src/drivers/compass.c:187:15:Compass_GetChip	4	static

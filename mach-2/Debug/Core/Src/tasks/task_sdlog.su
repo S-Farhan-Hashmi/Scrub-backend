@@ -1,0 +1,4 @@
+../Core/Src/tasks/task_sdlog.c:33:13:sd_mount	16	static
+../Core/Src/tasks/task_sdlog.c:46:13:sd_write_header	16	static
+../Core/Src/tasks/task_sdlog.c:63:13:sd_append	24	static
+../Core/Src/tasks/task_sdlog.c:84:6:SDLogTask	416	static

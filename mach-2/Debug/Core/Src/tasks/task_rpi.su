@@ -1,0 +1,4 @@
+../Core/Src/tasks/task_rpi.c:27:23:clamp_nav	16	static
+../Core/Src/tasks/task_rpi.c:36:13:rpi_get_line	16	static
+../Core/Src/tasks/task_rpi.c:79:13:parse_rpi_cmd	24	static
+../Core/Src/tasks/task_rpi.c:102:6:RpiUARTTask	40	static

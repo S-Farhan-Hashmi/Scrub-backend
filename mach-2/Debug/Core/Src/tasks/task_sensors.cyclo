@@ -1,0 +1,8 @@
+../Core/Src/tasks/task_sensors.c:35:6:HAL_ADC_ConvCpltCallback	2
+../Core/Src/tasks/task_sensors.c:47:21:raw_to_volt	1
+../Core/Src/tasks/task_sensors.c:52:14:calc_mq135	3
+../Core/Src/tasks/task_sensors.c:68:14:calc_turbidity	2
+../Core/Src/tasks/task_sensors.c:76:14:calc_ph	3
+../Core/Src/tasks/task_sensors.c:87:14:calc_tds	2
+../Core/Src/tasks/task_sensors.c:102:13:adc_read_blocking	4
+../Core/Src/tasks/task_sensors.c:135:6:SensorTask	5

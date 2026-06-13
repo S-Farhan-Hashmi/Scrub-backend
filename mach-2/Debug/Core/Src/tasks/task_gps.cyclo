@@ -1,0 +1,5 @@
+../Core/Src/tasks/task_gps.c:44:13:field	7
+../Core/Src/tasks/task_gps.c:66:13:parse_gsv	3
+../Core/Src/tasks/task_gps.c:87:13:parse_gsa	8
+../Core/Src/tasks/task_gps.c:124:13:gps_get_line	8
+../Core/Src/tasks/task_gps.c:171:6:GPSTask	20

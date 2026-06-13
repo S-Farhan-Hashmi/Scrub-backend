@@ -1,0 +1,4 @@
+../Core/Src/tasks/task_sdlog.c:33:13:sd_mount	3
+../Core/Src/tasks/task_sdlog.c:46:13:sd_write_header	3
+../Core/Src/tasks/task_sdlog.c:63:13:sd_append	3
+../Core/Src/tasks/task_sdlog.c:84:6:SDLogTask	8

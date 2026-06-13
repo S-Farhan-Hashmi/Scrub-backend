@@ -1,0 +1,3 @@
+../Core/Src/tasks/task_compass.c:30:13:compass_read_raw	48	static
+../Core/Src/tasks/task_compass.c:58:13:i2c_bus_recover	40	static
+../Core/Src/tasks/task_compass.c:91:6:CompassTask	48	static

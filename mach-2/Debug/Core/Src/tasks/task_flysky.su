@@ -1,0 +1,3 @@
+../Core/Src/tasks/task_flysky.c:42:6:HAL_TIM_IC_CaptureCallback	24	static
+../Core/Src/tasks/task_flysky.c:72:16:ppm_to_centered	16	static
+../Core/Src/tasks/task_flysky.c:80:6:FlySkyTask	56	static
